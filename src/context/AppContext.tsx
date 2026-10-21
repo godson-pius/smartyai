@@ -1,4 +1,5 @@
 import React, { createContext, useContext, useState, useEffect, ReactNode, useRef } from 'react';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { INITIAL_VIDEOS, VideoItem } from '@/data/mockVideos';
 import { PlanTier, SUBSCRIPTION_PLANS, DURATION_OPTIONS, VideoDurationOption } from '@/data/plans';
 import { CREDIT_PACKAGES, CreditPackage } from '@/data/creditPackages';
@@ -12,7 +13,30 @@ export interface UserProfile {
   plan: PlanTier;
   creditsRemaining: number;
   totalCredits: number;
+  role?: string;
+  isGuest?: boolean;
 }
+
+export const DEFAULT_DEMO_USER: UserProfile = {
+  name: 'Alex Rivera',
+  email: 'alex.rivera@creator.studio',
+  avatar: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=200&auto=format&fit=crop&q=80',
+  plan: 'Pro',
+  creditsRemaining: 120,
+  totalCredits: 250,
+  role: 'AI Filmmaker',
+};
+
+export const GUEST_USER: UserProfile = {
+  name: 'Guest Creator',
+  email: 'guest@lazan.ai',
+  avatar: 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?w=200&auto=format&fit=crop&q=80',
+  plan: 'Basic',
+  creditsRemaining: 60,
+  totalCredits: 100,
+  role: 'Explorer',
+  isGuest: true,
+};
 
 export interface GenerationDraft {
   prompt: string;
@@ -59,6 +83,15 @@ interface AppContextType {
   videos: VideoItem[];
   draft: GenerationDraft;
   generationState: ActiveGenerationState;
+  isAuthenticated: boolean;
+  hasCompletedOnboarding: boolean;
+  isLoaded: boolean;
+  login: (email: string, password?: string) => Promise<boolean>;
+  signUp: (name: string, email: string, password?: string, role?: string) => Promise<boolean>;
+  continueAsGuest: () => Promise<void>;
+  logout: () => Promise<void>;
+  completeOnboarding: () => Promise<void>;
+  resetOnboarding: () => Promise<void>;
   updateDraft: (updates: Partial<GenerationDraft>) => void;
   resetDraft: () => void;
   improveDraftPrompt: () => void;
@@ -139,20 +172,154 @@ const THUMBNAILS_BY_STYLE: Record<string, string[]> = {
 };
 
 export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => {
-  const [user, setUser] = useState<UserProfile>({
-    name: 'Alex Rivera',
-    email: 'alex.rivera@creator.studio',
-    avatar: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=200&auto=format&fit=crop&q=80',
-    plan: 'Pro',
-    creditsRemaining: 120,
-    totalCredits: 250,
-  });
+  const [user, setUser] = useState<UserProfile>(DEFAULT_DEMO_USER);
+  const [isAuthenticated, setIsAuthenticated] = useState<boolean>(false);
+  const [hasCompletedOnboarding, setHasCompletedOnboarding] = useState<boolean>(false);
+  const [isLoaded, setIsLoaded] = useState<boolean>(false);
 
   const [videos, setVideos] = useState<VideoItem[]>(INITIAL_VIDEOS);
   const [draft, setDraft] = useState<GenerationDraft>(defaultDraft);
   const [generationState, setGenerationState] = useState<ActiveGenerationState>(defaultGenerationState);
 
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  // Hydrate state from local storage on launch
+  useEffect(() => {
+    const hydrateState = async () => {
+      try {
+        const [storedOnboarded, storedUser, storedVideos] = await Promise.all([
+          AsyncStorage.getItem('@lazan_onboarded'),
+          AsyncStorage.getItem('@lazan_user'),
+          AsyncStorage.getItem('@lazan_videos'),
+        ]);
+
+        if (storedOnboarded === 'true') {
+          setHasCompletedOnboarding(true);
+        }
+        if (storedUser) {
+          const parsedUser = JSON.parse(storedUser);
+          setUser(parsedUser);
+          setIsAuthenticated(true);
+        }
+        if (storedVideos) {
+          const parsedVideos = JSON.parse(storedVideos);
+          if (Array.isArray(parsedVideos) && parsedVideos.length > 0) {
+            setVideos(parsedVideos);
+          }
+        }
+      } catch (err) {
+        console.warn('Failed to hydrate local app storage:', err);
+      } finally {
+        setIsLoaded(true);
+      }
+    };
+
+    hydrateState();
+  }, []);
+
+  const persistUser = async (updatedUser: UserProfile | null) => {
+    try {
+      if (updatedUser) {
+        await AsyncStorage.setItem('@lazan_user', JSON.stringify(updatedUser));
+      } else {
+        await AsyncStorage.removeItem('@lazan_user');
+      }
+    } catch (err) {
+      console.warn('Failed to persist user profile:', err);
+    }
+  };
+
+  const persistVideos = async (updatedVideos: VideoItem[]) => {
+    try {
+      await AsyncStorage.setItem('@lazan_videos', JSON.stringify(updatedVideos));
+    } catch (err) {
+      console.warn('Failed to persist videos:', err);
+    }
+  };
+
+  const login = async (email: string, _password?: string): Promise<boolean> => {
+    // Provide realistic authentication
+    const trimmedEmail = email.trim().toLowerCase();
+    let loggedInUser: UserProfile;
+
+    if (trimmedEmail === DEFAULT_DEMO_USER.email.toLowerCase() || trimmedEmail === 'demo@lazan.ai') {
+      loggedInUser = { ...DEFAULT_DEMO_USER };
+    } else {
+      const derivedName = trimmedEmail.split('@')[0]
+        .replace(/[._]/g, ' ')
+        .replace(/\b\w/g, (c) => c.toUpperCase()) || 'Creator';
+
+      loggedInUser = {
+        name: derivedName,
+        email: trimmedEmail,
+        avatar: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=200&auto=format&fit=crop&q=80',
+        plan: 'Pro',
+        creditsRemaining: 150,
+        totalCredits: 200,
+        role: 'Content Creator',
+      };
+    }
+
+    setUser(loggedInUser);
+    setIsAuthenticated(true);
+    setHasCompletedOnboarding(true);
+    await Promise.all([
+      persistUser(loggedInUser),
+      AsyncStorage.setItem('@lazan_onboarded', 'true'),
+    ]);
+    return true;
+  };
+
+  const signUp = async (name: string, email: string, _password?: string, role?: string): Promise<boolean> => {
+    const trimmedName = name.trim() || 'New Creator';
+    const trimmedEmail = email.trim().toLowerCase() || 'creator@lazan.ai';
+
+    const newUser: UserProfile = {
+      name: trimmedName,
+      email: trimmedEmail,
+      avatar: `https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?w=200&auto=format&fit=crop&q=80`,
+      plan: 'Basic',
+      creditsRemaining: 100, // Welcome Creator Bonus!
+      totalCredits: 100,
+      role: role || 'Digital Creator',
+    };
+
+    setUser(newUser);
+    setIsAuthenticated(true);
+    setHasCompletedOnboarding(true);
+    await Promise.all([
+      persistUser(newUser),
+      AsyncStorage.setItem('@lazan_onboarded', 'true'),
+    ]);
+    return true;
+  };
+
+  const continueAsGuest = async (): Promise<void> => {
+    const guest = { ...GUEST_USER };
+    setUser(guest);
+    setIsAuthenticated(true);
+    setHasCompletedOnboarding(true);
+    await Promise.all([
+      persistUser(guest),
+      AsyncStorage.setItem('@lazan_onboarded', 'true'),
+    ]);
+  };
+
+  const logout = async (): Promise<void> => {
+    setIsAuthenticated(false);
+    setUser(GUEST_USER);
+    await AsyncStorage.removeItem('@lazan_user');
+  };
+
+  const completeOnboarding = async (): Promise<void> => {
+    setHasCompletedOnboarding(true);
+    await AsyncStorage.setItem('@lazan_onboarded', 'true');
+  };
+
+  const resetOnboarding = async (): Promise<void> => {
+    setHasCompletedOnboarding(false);
+    await AsyncStorage.removeItem('@lazan_onboarded');
+  };
 
   useEffect(() => {
     return () => {
@@ -334,7 +501,9 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
             creditsUsed: cost,
           };
 
-          setVideos((prev) => [newVideo, ...prev]);
+          const updatedVideos = [newVideo, ...videos];
+          setVideos(updatedVideos);
+          persistVideos(updatedVideos);
 
           setGenerationState({
             isGenerating: false,
@@ -357,7 +526,11 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   };
 
   const deleteVideo = (id: string) => {
-    setVideos((prev) => prev.filter((v) => v.id !== id));
+    setVideos((prev) => {
+      const filtered = prev.filter((v) => v.id !== id);
+      persistVideos(filtered);
+      return filtered;
+    });
   };
 
   const purchaseCredits = (packageId: string): boolean => {
@@ -365,11 +538,15 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     if (!pack) return false;
 
     const totalAdded = pack.credits + (pack.bonusCredits || 0);
-    setUser((prev) => ({
-      ...prev,
-      creditsRemaining: prev.creditsRemaining + totalAdded,
-      totalCredits: prev.totalCredits + totalAdded,
-    }));
+    setUser((prev) => {
+      const updated = {
+        ...prev,
+        creditsRemaining: prev.creditsRemaining + totalAdded,
+        totalCredits: prev.totalCredits + totalAdded,
+      };
+      persistUser(updated);
+      return updated;
+    });
     return true;
   };
 
@@ -377,10 +554,14 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     const plan = SUBSCRIPTION_PLANS.find((p) => p.id === planId);
     if (!plan) return;
 
-    setUser((prev) => ({
-      ...prev,
-      plan: planId,
-    }));
+    setUser((prev) => {
+      const updated = {
+        ...prev,
+        plan: planId,
+      };
+      persistUser(updated);
+      return updated;
+    });
   };
 
   return (
@@ -390,6 +571,15 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         videos,
         draft,
         generationState,
+        isAuthenticated,
+        hasCompletedOnboarding,
+        isLoaded,
+        login,
+        signUp,
+        continueAsGuest,
+        logout,
+        completeOnboarding,
+        resetOnboarding,
         updateDraft,
         resetDraft,
         improveDraftPrompt,

@@ -37,6 +37,7 @@ const SETTINGS_SECTIONS: SettingSection[] = [
       { id: 'ratio', label: 'Default Aspect Ratio', icon: 'crop-outline', value: '9:16' },
       { id: 'voice', label: 'Voice Model', icon: 'mic-outline', value: 'Neural V2' },
       { id: 'notifications', label: 'Push Notifications', icon: 'notifications-outline', badge: 'Active' },
+      { id: 'onboarding', label: 'Replay Studio Onboarding', icon: 'sparkles-outline' },
     ],
   },
   {
@@ -60,7 +61,7 @@ const SETTINGS_SECTIONS: SettingSection[] = [
 export default function ProfileScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
-  const { user, videos } = useApp();
+  const { user, videos, logout, resetOnboarding } = useApp();
 
   const currentPlanObj = SUBSCRIPTION_PLANS.find((p) => p.id === user.plan) || SUBSCRIPTION_PLANS[1];
 
@@ -72,13 +73,25 @@ export default function ProfileScreen() {
   const handleSignOut = () => {
     Alert.alert('Sign Out', 'Are you sure you want to sign out of your creator account?', [
       { text: 'Cancel', style: 'cancel' },
-      { text: 'Sign Out', style: 'destructive', onPress: () => Alert.alert('Signed out', 'Session cleared.') },
+      {
+        text: 'Sign Out',
+        style: 'destructive',
+        onPress: async () => {
+          await logout();
+          router.replace('/auth/login');
+        },
+      },
     ]);
   };
 
-  const handleSettingPress = (id: string, label: string) => {
+  const handleSettingPress = async (id: string, label: string) => {
     if (id === 'billing') {
       router.push('/pricing');
+      return;
+    }
+    if (id === 'onboarding') {
+      await resetOnboarding();
+      router.replace('/onboarding');
       return;
     }
     Alert.alert(label, `${label} options can be configured here.`);
