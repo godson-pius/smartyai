@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "893991106391",
+    "project_id": "lazan-a9ce1",
+    "storage_bucket": "lazan-a9ce1.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:893991106391:android:a79f35a1c1c4d8af1b7012",
+        "android_client_info": {
+          "package_name": "com.lazan.app"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyBU-eZX6JGEWEls4RmQnV-XMquuCgyXS34"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

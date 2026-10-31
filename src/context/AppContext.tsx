@@ -1,12 +1,24 @@
 import React, { createContext, useContext, useState, useEffect, ReactNode, useRef } from 'react';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import {
+  signInWithEmailAndPassword,
+  createUserWithEmailAndPassword,
+  signOut,
+  updateProfile,
+  sendPasswordResetEmail,
+  onAuthStateChanged,
+} from 'firebase/auth';
+import { auth } from '@/config/firebase';
+import { getFirebaseErrorMessage } from '@/utils/firebaseErrors';
 import { INITIAL_VIDEOS, VideoItem } from '@/data/mockVideos';
 import { PlanTier, SUBSCRIPTION_PLANS, DURATION_OPTIONS, VideoDurationOption } from '@/data/plans';
 import { CREDIT_PACKAGES, CreditPackage } from '@/data/creditPackages';
 import { VIDEO_STYLES } from '@/data/styles';
 import { VOICE_LANGUAGES } from '@/data/voices';
+import { generateAIVideo } from '@/services/videoGeneration';
 
 export interface UserProfile {
+  uid?: string;
   name: string;
   email: string;
   avatar: string;
@@ -90,6 +102,7 @@ interface AppContextType {
   signUp: (name: string, email: string, password?: string, role?: string) => Promise<boolean>;
   continueAsGuest: () => Promise<void>;
   logout: () => Promise<void>;
+  sendPasswordReset: (email: string) => Promise<void>;
   completeOnboarding: () => Promise<void>;
   resetOnboarding: () => Promise<void>;
   updateDraft: (updates: Partial<GenerationDraft>) => void;
@@ -183,9 +196,11 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
 
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
-  // Hydrate state from local storage on launch
+  // Hydrate state from local storage on launch and sync with Firebase Auth
   useEffect(() => {
-    const hydrateState = async () => {
+    let isMounted = true;
+
+    const hydrateInitialStorage = async () => {
       try {
         const [storedOnboarded, storedUser, storedVideos] = await Promise.all([
           AsyncStorage.getItem('@lazan_onboarded'),
@@ -193,34 +208,124 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
           AsyncStorage.getItem('@lazan_videos'),
         ]);
 
-        if (storedOnboarded === 'true') {
+        if (storedOnboarded === 'true' && isMounted) {
           setHasCompletedOnboarding(true);
         }
-        if (storedUser) {
-          const parsedUser = JSON.parse(storedUser);
-          setUser(parsedUser);
-          setIsAuthenticated(true);
+        if (storedUser && isMounted) {
+          try {
+            const parsedUser = JSON.parse(storedUser);
+            setUser(parsedUser);
+            setIsAuthenticated(true);
+          } catch {
+            // Ignore parse errors
+          }
         }
-        if (storedVideos) {
-          const parsedVideos = JSON.parse(storedVideos);
-          if (Array.isArray(parsedVideos) && parsedVideos.length > 0) {
-            setVideos(parsedVideos);
+        if (storedVideos && isMounted) {
+          try {
+            const parsedVideos = JSON.parse(storedVideos);
+            if (Array.isArray(parsedVideos) && parsedVideos.length > 0) {
+              setVideos(parsedVideos);
+            }
+          } catch {
+            // Ignore parse errors
           }
         }
       } catch (err) {
         console.warn('Failed to hydrate local app storage:', err);
       } finally {
-        setIsLoaded(true);
+        if (isMounted) {
+          setIsLoaded(true);
+        }
       }
     };
 
-    hydrateState();
+    hydrateInitialStorage();
+
+    // Firebase Auth State Listener
+    const unsubscribeAuth = onAuthStateChanged(auth, async (fbUser) => {
+      if (!isMounted) return;
+
+      if (fbUser) {
+        try {
+          const userKey = `@lazan_user_${fbUser.uid}`;
+          const savedData = await AsyncStorage.getItem(userKey);
+          let profile: UserProfile;
+
+          if (savedData) {
+            profile = JSON.parse(savedData);
+            profile.email = fbUser.email || profile.email;
+            profile.name = fbUser.displayName || profile.name;
+          } else {
+            const fallbackName =
+              fbUser.displayName ||
+              (fbUser.email
+                ? fbUser.email
+                    .split('@')[0]
+                    .replace(/[._]/g, ' ')
+                    .replace(/\b\w/g, (c) => c.toUpperCase())
+                : 'Creator');
+
+            profile = {
+              uid: fbUser.uid,
+              name: fallbackName,
+              email: fbUser.email || '',
+              avatar:
+                fbUser.photoURL ||
+                'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=200&auto=format&fit=crop&q=80',
+              plan: 'Pro',
+              creditsRemaining: 150,
+              totalCredits: 200,
+              role: 'Content Creator',
+            };
+            await AsyncStorage.setItem(userKey, JSON.stringify(profile));
+          }
+
+          setUser(profile);
+          setIsAuthenticated(true);
+          setHasCompletedOnboarding(true);
+          await AsyncStorage.setItem('@lazan_user', JSON.stringify(profile));
+        } catch (err) {
+          console.warn('Error synchronizing Firebase user profile:', err);
+        }
+      } else {
+        // If not in Firebase, check if user is a guest or in offline demo mode
+        const [isGuest, localUser] = await Promise.all([
+          AsyncStorage.getItem('@lazan_guest'),
+          AsyncStorage.getItem('@lazan_user'),
+        ]);
+
+        if (isGuest === 'true' && isMounted) {
+          setUser(GUEST_USER);
+          setIsAuthenticated(true);
+        } else if (localUser && isMounted) {
+          try {
+            const parsed = JSON.parse(localUser);
+            if (parsed.email === DEFAULT_DEMO_USER.email) {
+              setUser(parsed);
+              setIsAuthenticated(true);
+            }
+          } catch {
+            setIsAuthenticated(false);
+          }
+        } else if (isMounted) {
+          setIsAuthenticated(false);
+        }
+      }
+    });
+
+    return () => {
+      isMounted = false;
+      unsubscribeAuth();
+    };
   }, []);
 
   const persistUser = async (updatedUser: UserProfile | null) => {
     try {
       if (updatedUser) {
         await AsyncStorage.setItem('@lazan_user', JSON.stringify(updatedUser));
+        if (updatedUser.uid) {
+          await AsyncStorage.setItem(`@lazan_user_${updatedUser.uid}`, JSON.stringify(updatedUser));
+        }
       } else {
         await AsyncStorage.removeItem('@lazan_user');
       }
@@ -237,61 +342,134 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     }
   };
 
-  const login = async (email: string, _password?: string): Promise<boolean> => {
-    // Provide realistic authentication
+  const login = async (email: string, password?: string): Promise<boolean> => {
     const trimmedEmail = email.trim().toLowerCase();
-    let loggedInUser: UserProfile;
 
-    if (trimmedEmail === DEFAULT_DEMO_USER.email.toLowerCase() || trimmedEmail === 'demo@lazan.ai') {
-      loggedInUser = { ...DEFAULT_DEMO_USER };
-    } else {
-      const derivedName = trimmedEmail.split('@')[0]
-        .replace(/[._]/g, ' ')
-        .replace(/\b\w/g, (c) => c.toUpperCase()) || 'Creator';
+    // Fast-path for offline preview / demo credentials
+    if (trimmedEmail === DEFAULT_DEMO_USER.email.toLowerCase() && (!password || password === 'demo12345')) {
+      try {
+        if (password) {
+          await signInWithEmailAndPassword(auth, trimmedEmail, password);
+        }
+      } catch {
+        // Fallback to demo profile if not created on Firebase
+      }
 
-      loggedInUser = {
-        name: derivedName,
-        email: trimmedEmail,
-        avatar: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=200&auto=format&fit=crop&q=80',
-        plan: 'Pro',
-        creditsRemaining: 150,
-        totalCredits: 200,
-        role: 'Content Creator',
-      };
+      setUser(DEFAULT_DEMO_USER);
+      setIsAuthenticated(true);
+      setHasCompletedOnboarding(true);
+      await Promise.all([
+        persistUser(DEFAULT_DEMO_USER),
+        AsyncStorage.setItem('@lazan_onboarded', 'true'),
+        AsyncStorage.removeItem('@lazan_guest'),
+      ]);
+      return true;
     }
 
-    setUser(loggedInUser);
-    setIsAuthenticated(true);
-    setHasCompletedOnboarding(true);
-    await Promise.all([
-      persistUser(loggedInUser),
-      AsyncStorage.setItem('@lazan_onboarded', 'true'),
-    ]);
-    return true;
+    if (!password) {
+      throw new Error('Please enter your password.');
+    }
+
+    try {
+      const userCredential = await signInWithEmailAndPassword(auth, trimmedEmail, password);
+      const fbUser = userCredential.user;
+
+      const userKey = `@lazan_user_${fbUser.uid}`;
+      const savedData = await AsyncStorage.getItem(userKey);
+      let profile: UserProfile;
+
+      if (savedData) {
+        profile = JSON.parse(savedData);
+        profile.email = fbUser.email || trimmedEmail;
+        profile.name = fbUser.displayName || profile.name;
+      } else {
+        const derivedName =
+          fbUser.displayName ||
+          trimmedEmail
+            .split('@')[0]
+            .replace(/[._]/g, ' ')
+            .replace(/\b\w/g, (c) => c.toUpperCase()) ||
+          'Creator';
+
+        profile = {
+          uid: fbUser.uid,
+          name: derivedName,
+          email: fbUser.email || trimmedEmail,
+          avatar:
+            fbUser.photoURL ||
+            'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=200&auto=format&fit=crop&q=80',
+          plan: 'Pro',
+          creditsRemaining: 150,
+          totalCredits: 200,
+          role: 'Content Creator',
+        };
+      }
+
+      setUser(profile);
+      setIsAuthenticated(true);
+      setHasCompletedOnboarding(true);
+      await Promise.all([
+        persistUser(profile),
+        AsyncStorage.setItem('@lazan_onboarded', 'true'),
+        AsyncStorage.removeItem('@lazan_guest'),
+      ]);
+      return true;
+    } catch (error: any) {
+      throw new Error(getFirebaseErrorMessage(error));
+    }
   };
 
-  const signUp = async (name: string, email: string, _password?: string, role?: string): Promise<boolean> => {
+  const signUp = async (name: string, email: string, password?: string, role?: string): Promise<boolean> => {
     const trimmedName = name.trim() || 'New Creator';
-    const trimmedEmail = email.trim().toLowerCase() || 'creator@lazan.ai';
+    const trimmedEmail = email.trim().toLowerCase();
 
-    const newUser: UserProfile = {
-      name: trimmedName,
-      email: trimmedEmail,
-      avatar: `https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?w=200&auto=format&fit=crop&q=80`,
-      plan: 'Basic',
-      creditsRemaining: 100, // Welcome Creator Bonus!
-      totalCredits: 100,
-      role: role || 'Digital Creator',
-    };
+    if (!password || password.length < 6) {
+      throw new Error('Password must be at least 6 characters.');
+    }
 
-    setUser(newUser);
-    setIsAuthenticated(true);
-    setHasCompletedOnboarding(true);
-    await Promise.all([
-      persistUser(newUser),
-      AsyncStorage.setItem('@lazan_onboarded', 'true'),
-    ]);
-    return true;
+    try {
+      const userCredential = await createUserWithEmailAndPassword(auth, trimmedEmail, password);
+      const fbUser = userCredential.user;
+
+      // Update display name on Firebase User record
+      await updateProfile(fbUser, { displayName: trimmedName }).catch(() => {});
+
+      const newUser: UserProfile = {
+        uid: fbUser.uid,
+        name: trimmedName,
+        email: trimmedEmail,
+        avatar: 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?w=200&auto=format&fit=crop&q=80',
+        plan: 'Basic',
+        creditsRemaining: 100, // Welcome Creator Bonus!
+        totalCredits: 100,
+        role: role || 'Digital Creator',
+      };
+
+      setUser(newUser);
+      setIsAuthenticated(true);
+      setHasCompletedOnboarding(true);
+      await Promise.all([
+        persistUser(newUser),
+        AsyncStorage.setItem('@lazan_onboarded', 'true'),
+        AsyncStorage.removeItem('@lazan_guest'),
+      ]);
+      return true;
+    } catch (error: any) {
+      throw new Error(getFirebaseErrorMessage(error));
+    }
+  };
+
+  const sendPasswordReset = async (email: string): Promise<void> => {
+    const trimmedEmail = email.trim().toLowerCase();
+    if (!trimmedEmail) {
+      throw new Error('Please enter your account email address.');
+    }
+
+    try {
+      await sendPasswordResetEmail(auth, trimmedEmail);
+    } catch (error: any) {
+      throw new Error(getFirebaseErrorMessage(error));
+    }
   };
 
   const continueAsGuest = async (): Promise<void> => {
@@ -302,13 +480,22 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     await Promise.all([
       persistUser(guest),
       AsyncStorage.setItem('@lazan_onboarded', 'true'),
+      AsyncStorage.setItem('@lazan_guest', 'true'),
     ]);
   };
 
   const logout = async (): Promise<void> => {
+    try {
+      await signOut(auth);
+    } catch (err) {
+      console.warn('Sign out warning:', err);
+    }
     setIsAuthenticated(false);
     setUser(GUEST_USER);
-    await AsyncStorage.removeItem('@lazan_user');
+    await Promise.all([
+      AsyncStorage.removeItem('@lazan_user'),
+      AsyncStorage.removeItem('@lazan_guest'),
+    ]);
   };
 
   const completeOnboarding = async (): Promise<void> => {
@@ -431,10 +618,18 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       generatedVideoId: null,
     });
 
+    // Kick off Google Generative Video call
+    const apiPromise = generateAIVideo({
+      prompt: draft.prompt,
+      aspectRatio: draft.aspectRatio === '9:16' ? '9:16' : '16:9',
+      durationSeconds,
+      resolution: user.plan === 'Basic' ? '720p' : '1080p',
+    });
+
     return new Promise((resolve, reject) => {
       let currentStage = 0;
 
-      timerRef.current = setInterval(() => {
+      timerRef.current = setInterval(async () => {
         currentStage++;
 
         // Simulate error on step 3 if requested
@@ -473,6 +668,21 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
           // Completed
           if (timerRef.current) clearInterval(timerRef.current);
 
+          let apiVideoUrl: string | undefined;
+          try {
+            const apiResult = await Promise.race([
+              apiPromise,
+              new Promise<{ success: boolean; videoUrl?: string }>((res) =>
+                setTimeout(() => res({ success: false }), 1500)
+              ),
+            ]);
+            if (apiResult?.videoUrl) {
+              apiVideoUrl = apiResult.videoUrl;
+            }
+          } catch {
+            // fallback
+          }
+
           const styleImages = THUMBNAILS_BY_STYLE[draft.styleId] || THUMBNAILS_BY_STYLE.cinematic;
           const thumbnail = styleImages[Math.floor(Math.random() * styleImages.length)];
 
@@ -490,6 +700,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
             createdAt: Date.now(),
             status: 'completed',
             thumbnailUrl: thumbnail,
+            videoUrl: apiVideoUrl,
             style: selectedStyle,
             styleId: draft.styleId,
             voice: draft.voiceStyle === 'none' ? 'No Voice' : `${draft.voiceGender === 'female' ? 'Female' : 'Male'} ${draft.voiceStyle}`,
@@ -517,7 +728,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
 
           resolve(newVideoId);
         }
-      }, 1200); // 1.2s per stage = ~7.2s total smooth deterministic mock flow
+      }, 1200); // 1.2s per stage
     });
   };
 
@@ -578,6 +789,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         signUp,
         continueAsGuest,
         logout,
+        sendPasswordReset,
         completeOnboarding,
         resetOnboarding,
         updateDraft,

@@ -14,7 +14,9 @@ import { Shadows } from '@/constants/theme';
 export interface FloatingGlassTabBarProps {
   state: any;
   descriptors: any;
-  navigation: any;
+  navigation?: any;
+  emitter?: any;
+  navigateToTab?: (routeKey: string) => void;
   insets?: any;
 }
 
@@ -22,8 +24,12 @@ export const FloatingGlassTabBar: React.FC<FloatingGlassTabBarProps> = ({
   state,
   descriptors,
   navigation,
+  emitter,
+  navigateToTab,
+  insets: propInsets,
 }) => {
-  const insets = useSafeAreaInsets();
+  const safeAreaInsets = useSafeAreaInsets();
+  const insets = propInsets ?? safeAreaInsets;
 
   const bottomOffset = insets.bottom > 0 ? insets.bottom + 4 : 16;
 
@@ -51,14 +57,40 @@ export const FloatingGlassTabBar: React.FC<FloatingGlassTabBarProps> = ({
               const isCreate = route.name === 'create';
 
               const onPress = () => {
-                const event = navigation.emit({
-                  type: 'tabPress',
-                  target: route.key,
-                  canPreventDefault: true,
-                });
+                const event = emitter
+                  ? emitter.emit({
+                      type: 'tabPress',
+                      target: route.key,
+                      canPreventDefault: true,
+                    })
+                  : navigation?.emit
+                    ? navigation.emit({
+                        type: 'tabPress',
+                        target: route.key,
+                        canPreventDefault: true,
+                      })
+                    : { defaultPrevented: false };
 
-                if (!isFocused && !event.defaultPrevented) {
-                  navigation.navigate(route.name);
+                if (!isFocused && !event?.defaultPrevented) {
+                  if (navigateToTab) {
+                    navigateToTab(route.key);
+                  } else if (navigation?.navigate) {
+                    navigation.navigate(route.name);
+                  }
+                }
+              };
+
+              const onLongPress = () => {
+                if (emitter) {
+                  emitter.emit({
+                    type: 'tabLongPress',
+                    target: route.key,
+                  });
+                } else if (navigation?.emit) {
+                  navigation.emit({
+                    type: 'tabLongPress',
+                    target: route.key,
+                  });
                 }
               };
 
@@ -69,6 +101,7 @@ export const FloatingGlassTabBar: React.FC<FloatingGlassTabBarProps> = ({
                     key={route.key}
                     activeOpacity={0.85}
                     onPress={onPress}
+                    onLongPress={onLongPress}
                     accessibilityRole="button"
                     accessibilityState={isFocused ? { selected: true } : {}}
                     accessibilityLabel={options.tabBarAccessibilityLabel}
@@ -115,6 +148,7 @@ export const FloatingGlassTabBar: React.FC<FloatingGlassTabBarProps> = ({
                   key={route.key}
                   activeOpacity={0.7}
                   onPress={onPress}
+                  onLongPress={onLongPress}
                   accessibilityRole="button"
                   accessibilityState={isFocused ? { selected: true } : {}}
                   accessibilityLabel={options.tabBarAccessibilityLabel}

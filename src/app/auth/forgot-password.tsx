@@ -15,9 +15,11 @@ import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
 import { Colors, BorderRadius, Shadows, Spacing } from '@/constants/theme';
+import { useApp } from '@/context/AppContext';
 
 export default function ForgotPasswordScreen() {
   const router = useRouter();
+  const { sendPasswordReset } = useApp();
   const [email, setEmail] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [isSuccess, setIsSuccess] = useState(false);
@@ -38,11 +40,14 @@ export default function ForgotPasswordScreen() {
     }
 
     setIsLoading(true);
-    // Simulate sending recovery link
-    setTimeout(() => {
-      setIsLoading(false);
+    try {
+      await sendPasswordReset(trimmed);
       setIsSuccess(true);
-    }, 1000);
+    } catch (err: any) {
+      setErrorMessage(err.message || 'Failed to send password reset email.');
+    } finally {
+      setIsLoading(false);
+    }
   };
 
   return (

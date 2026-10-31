@@ -8,6 +8,7 @@ export interface VideoItem {
   createdAt: number;
   status: 'completed' | 'processing' | 'failed';
   thumbnailUrl: string;
+  videoUrl?: string;
   style: string;
   styleId: string;
   voice: string;

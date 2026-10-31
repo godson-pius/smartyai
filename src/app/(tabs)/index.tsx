@@ -28,6 +28,17 @@ const QUICK_CREATE_ITEMS = [
   { id: 'comedy', label: 'Comedy', icon: 'happy-outline', color: '#F97316' },
 ];
 
+const getTimeBasedGreeting = (): string => {
+  const currentHour = new Date().getHours();
+  if (currentHour >= 5 && currentHour < 12) {
+    return 'Good morning';
+  } else if (currentHour >= 12 && currentHour < 17) {
+    return 'Good afternoon';
+  } else {
+    return 'Good evening';
+  }
+};
+
 export default function HomeScreen() {
   const router = useRouter();
   const { user, videos, updateDraft } = useApp();
@@ -38,6 +49,7 @@ export default function HomeScreen() {
   };
 
   const recentVideos = videos.slice(0, 5);
+  const greeting = getTimeBasedGreeting();
 
   return (
     <SafeAreaView style={styles.safeArea} edges={['top']}>
@@ -47,7 +59,7 @@ export default function HomeScreen() {
         {/* Top Header */}
         <View style={styles.header}>
           <View>
-            <Text style={styles.greetingText}>Good morning 👋</Text>
+            <Text style={styles.greetingText}>{greeting} 👋</Text>
             <Text style={styles.subGreetingText}>What will you create today?</Text>
           </View>
 
