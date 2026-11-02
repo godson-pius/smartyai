@@ -1,21 +1,21 @@
-import React, { createContext, useContext, useState, useEffect, ReactNode, useRef } from 'react';
-import AsyncStorage from '@react-native-async-storage/async-storage';
-import {
-  signInWithEmailAndPassword,
-  createUserWithEmailAndPassword,
-  signOut,
-  updateProfile,
-  sendPasswordResetEmail,
-  onAuthStateChanged,
-} from 'firebase/auth';
 import { auth } from '@/config/firebase';
-import { getFirebaseErrorMessage } from '@/utils/firebaseErrors';
+import { CREDIT_PACKAGES } from '@/data/creditPackages';
 import { INITIAL_VIDEOS, VideoItem } from '@/data/mockVideos';
-import { PlanTier, SUBSCRIPTION_PLANS, DURATION_OPTIONS, VideoDurationOption } from '@/data/plans';
-import { CREDIT_PACKAGES, CreditPackage } from '@/data/creditPackages';
+import { DURATION_OPTIONS, PlanTier, SUBSCRIPTION_PLANS } from '@/data/plans';
 import { VIDEO_STYLES } from '@/data/styles';
 import { VOICE_LANGUAGES } from '@/data/voices';
 import { generateAIVideo } from '@/services/videoGeneration';
+import { getFirebaseErrorMessage } from '@/utils/firebaseErrors';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import {
+  createUserWithEmailAndPassword,
+  onAuthStateChanged,
+  sendPasswordResetEmail,
+  signInWithEmailAndPassword,
+  signOut,
+  updateProfile,
+} from 'firebase/auth';
+import React, { createContext, ReactNode, useContext, useEffect, useRef, useState } from 'react';
 
 export interface UserProfile {
   uid?: string;
@@ -27,6 +27,7 @@ export interface UserProfile {
   totalCredits: number;
   role?: string;
   isGuest?: boolean;
+  hasUsedScriptTrial?: boolean;
 }
 
 export const DEFAULT_DEMO_USER: UserProfile = {
@@ -51,7 +52,10 @@ export const GUEST_USER: UserProfile = {
 };
 
 export interface GenerationDraft {
+  mode: 'prompt' | 'script';
   prompt: string;
+  customScript?: string;
+  narrationMode: 'voiceover' | 'visual_only';
   styleId: string;
   durationId: string;
   voiceGender: 'male' | 'female';
@@ -120,7 +124,10 @@ interface AppContextType {
 }
 
 const defaultDraft: GenerationDraft = {
-  prompt: 'A cinematic scene of a young African entrepreneur walking through Kigali at sunset, golden hour warm lighting, bustling modern boulevard.',
+  mode: 'prompt',
+  prompt: 'A cinematic scene of a young African entrepreneur walking through Manchester at sunset, golden hour warm lighting, bustling modern boulevard.',
+  customScript: '',
+  narrationMode: 'voiceover',
   styleId: 'cinematic',
   durationId: '1m',
   voiceGender: 'female',
@@ -195,6 +202,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   const [generationState, setGenerationState] = useState<ActiveGenerationState>(defaultGenerationState);
 
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const isCancelledRef = useRef<boolean>(false);
 
   // Hydrate state from local storage on launch and sync with Firebase Auth
   useEffect(() => {
@@ -224,7 +232,18 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
           try {
             const parsedVideos = JSON.parse(storedVideos);
             if (Array.isArray(parsedVideos) && parsedVideos.length > 0) {
-              setVideos(parsedVideos);
+              const enriched = parsedVideos.map((v: VideoItem) => {
+                if (!v.videoUrl || v.videoUrl.includes('commondatastorage.googleapis.com')) {
+                  const match = INITIAL_VIDEOS.find((iv) => iv.id === v.id);
+                  return {
+                    ...v,
+                    videoUrl: match?.videoUrl || 'https://test-videos.co.uk/vids/sintel/mp4/h264/1080/Sintel_1080_10s_5MB.mp4',
+                  };
+                }
+                return v;
+              });
+              setVideos(enriched);
+              persistVideos(enriched);
             }
           } catch {
             // Ignore parse errors
@@ -260,9 +279,9 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
               fbUser.displayName ||
               (fbUser.email
                 ? fbUser.email
-                    .split('@')[0]
-                    .replace(/[._]/g, ' ')
-                    .replace(/\b\w/g, (c) => c.toUpperCase())
+                  .split('@')[0]
+                  .replace(/[._]/g, ' ')
+                  .replace(/\b\w/g, (c) => c.toUpperCase())
                 : 'Creator');
 
             profile = {
@@ -432,7 +451,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       const fbUser = userCredential.user;
 
       // Update display name on Firebase User record
-      await updateProfile(fbUser, { displayName: trimmedName }).catch(() => {});
+      await updateProfile(fbUser, { displayName: trimmedName }).catch(() => { });
 
       const newUser: UserProfile = {
         uid: fbUser.uid,
@@ -527,7 +546,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   const improveDraftPrompt = () => {
     const selectedStyle = VIDEO_STYLES.find((s) => s.id === draft.styleId);
     const styleModifier = selectedStyle?.promptModifier || 'cinematic lighting, ultra-realistic detail, smooth motion';
-    
+
     // Enrich the existing prompt
     const trimmed = draft.prompt.trim();
     if (!trimmed) {
@@ -571,6 +590,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   };
 
   const cancelGeneration = () => {
+    isCancelledRef.current = true;
     if (timerRef.current) {
       clearInterval(timerRef.current);
       timerRef.current = null;
@@ -594,11 +614,21 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       throw new Error('Insufficient credits');
     }
 
+    isCancelledRef.current = false;
+    if (timerRef.current) {
+      clearInterval(timerRef.current);
+      timerRef.current = null;
+    }
+
     // Deduct credits immediately
-    setUser((prev) => ({
-      ...prev,
-      creditsRemaining: prev.creditsRemaining - cost,
-    }));
+    setUser((prev) => {
+      const updated = {
+        ...prev,
+        creditsRemaining: prev.creditsRemaining - cost,
+      };
+      persistUser(updated);
+      return updated;
+    });
 
     const newVideoId = `vid-${Date.now()}`;
     const selectedStyle = VIDEO_STYLES.find((s) => s.id === draft.styleId)?.name || 'Cinematic';
@@ -607,7 +637,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     const durationSeconds = selectedDuration ? selectedDuration.seconds : 60;
     const languageObj = VOICE_LANGUAGES.find((l) => l.id === draft.languageId);
 
-    // Initial state
+    // Initial state (Stage 0: 15%)
     setGenerationState({
       isGenerating: true,
       currentStageIndex: 0,
@@ -618,118 +648,211 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       generatedVideoId: null,
     });
 
-    // Kick off Google Generative Video call
-    const apiPromise = generateAIVideo({
-      prompt: draft.prompt,
-      aspectRatio: draft.aspectRatio === '9:16' ? '9:16' : '16:9',
-      durationSeconds,
-      resolution: user.plan === 'Basic' ? '720p' : '1080p',
-    });
-
-    return new Promise((resolve, reject) => {
-      let currentStage = 0;
-
-      timerRef.current = setInterval(async () => {
-        currentStage++;
-
-        // Simulate error on step 3 if requested
-        if (shouldSimulateError && currentStage === 3) {
-          if (timerRef.current) clearInterval(timerRef.current);
-          
+    // Handle intentional error simulation
+    if (shouldSimulateError) {
+      return new Promise((_, reject) => {
+        timerRef.current = setTimeout(() => {
           // Refund credits if generation fails
-          setUser((prev) => ({
-            ...prev,
-            creditsRemaining: prev.creditsRemaining + cost,
-          }));
+          setUser((prev) => {
+            const refunded = {
+              ...prev,
+              creditsRemaining: prev.creditsRemaining + cost,
+            };
+            persistUser(refunded);
+            return refunded;
+          });
 
           setGenerationState({
             isGenerating: false,
-            currentStageIndex: 3,
+            currentStageIndex: 2,
             progressPercent: 55,
             stageName: 'Scene generation interrupted',
             stageDetail: 'GPU node experienced a transient rendering fault.',
             error: "Something went wrong. We couldn't finish generating your video. Your " + cost + " credits have been refunded.",
             generatedVideoId: null,
           });
-          reject(new Error('Generation failed'));
-          return;
-        }
+          reject(new Error('Generation simulated failure'));
+        }, 3000) as any;
+      });
+    }
 
-        if (currentStage < GENERATION_STAGES.length) {
-          const stage = GENERATION_STAGES[currentStage];
-          setGenerationState((prev) => ({
-            ...prev,
-            currentStageIndex: currentStage,
-            progressPercent: stage.percent,
-            stageName: stage.label,
-            stageDetail: stage.detail,
-          }));
-        } else {
-          // Completed
-          if (timerRef.current) clearInterval(timerRef.current);
+    const isScriptMode = draft.mode === 'script' && !!draft.customScript?.trim();
 
-          let apiVideoUrl: string | undefined;
-          try {
-            const apiResult = await Promise.race([
-              apiPromise,
-              new Promise<{ success: boolean; videoUrl?: string }>((res) =>
-                setTimeout(() => res({ success: false }), 1500)
-              ),
-            ]);
-            if (apiResult?.videoUrl) {
-              apiVideoUrl = apiResult.videoUrl;
-            }
-          } catch {
-            // fallback
-          }
+    // Consume 1 free trial for Basic user if running script mode
+    if (isScriptMode && user.plan === 'Basic' && !user.hasUsedScriptTrial) {
+      setUser((prev) => {
+        const updated = { ...prev, hasUsedScriptTrial: true };
+        persistUser(updated);
+        return updated;
+      });
+    }
 
-          const styleImages = THUMBNAILS_BY_STYLE[draft.styleId] || THUMBNAILS_BY_STYLE.cinematic;
-          const thumbnail = styleImages[Math.floor(Math.random() * styleImages.length)];
-
-          // Derive a catchy title from prompt
-          let title = draft.prompt.split(',')[0].slice(0, 32);
-          if (title.length < 5) title = 'Untitled AI Creation';
-
-          const newVideo: VideoItem = {
-            id: newVideoId,
-            title: title.trim(),
-            prompt: draft.prompt,
-            duration: durationLabel,
-            durationSeconds,
-            date: 'Just now',
-            createdAt: Date.now(),
-            status: 'completed',
-            thumbnailUrl: thumbnail,
-            videoUrl: apiVideoUrl,
-            style: selectedStyle,
-            styleId: draft.styleId,
-            voice: draft.voiceStyle === 'none' ? 'No Voice' : `${draft.voiceGender === 'female' ? 'Female' : 'Male'} ${draft.voiceStyle}`,
-            language: languageObj ? languageObj.name : 'English',
-            aspectRatio: draft.aspectRatio,
-            camera: draft.cameraStyle,
-            resolution: user.plan === 'Basic' ? '720p HD' : '1080p FHD',
-            fileSize: `${Math.round(durationSeconds * 0.55 * 10) / 10} MB`,
-            creditsUsed: cost,
-          };
-
-          const updatedVideos = [newVideo, ...videos];
-          setVideos(updatedVideos);
-          persistVideos(updatedVideos);
-
-          setGenerationState({
-            isGenerating: false,
-            currentStageIndex: GENERATION_STAGES.length - 1,
-            progressPercent: 100,
-            stageName: 'Complete',
-            stageDetail: 'Your video is ready 🎉',
-            error: null,
-            generatedVideoId: newVideoId,
-          });
-
-          resolve(newVideoId);
-        }
-      }, 1200); // 1.2s per stage
+    // Kick off real Gemini AI Screenplay and Director generation
+    const apiPromise = generateAIVideo({
+      prompt: isScriptMode ? (draft.customScript || draft.prompt) : draft.prompt,
+      mode: draft.mode,
+      customScript: draft.customScript,
+      narrationMode: draft.narrationMode,
+      style: selectedStyle,
+      aspectRatio: draft.aspectRatio === '9:16' ? '9:16' : '16:9',
+      durationSeconds,
+      resolution: user.plan === 'Basic' ? '720p' : '1080p',
+      mood: draft.mood,
+      cameraStyle: draft.cameraStyle,
     });
+
+    const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+    // Stage 0 -> 1: Understanding idea (1.5s)
+    await sleep(1500);
+    if (isCancelledRef.current) throw new Error('Cancelled');
+    setGenerationState((prev) => ({
+      ...prev,
+      currentStageIndex: 1,
+      progressPercent: GENERATION_STAGES[1].percent,
+      stageName: GENERATION_STAGES[1].label,
+      stageDetail: GENERATION_STAGES[1].detail,
+    }));
+
+    // Stage 1 -> 2: Writing script (2.0s)
+    await sleep(2000);
+    if (isCancelledRef.current) throw new Error('Cancelled');
+    setGenerationState((prev) => ({
+      ...prev,
+      currentStageIndex: 2,
+      progressPercent: GENERATION_STAGES[2].percent,
+      stageName: GENERATION_STAGES[2].label,
+      stageDetail: GENERATION_STAGES[2].detail,
+    }));
+
+    // Stage 2 -> 3: Creating scenes & generating video (2.0s)
+    await sleep(2000);
+    if (isCancelledRef.current) throw new Error('Cancelled');
+    setGenerationState((prev) => ({
+      ...prev,
+      currentStageIndex: 3,
+      progressPercent: GENERATION_STAGES[3].percent,
+      stageName: GENERATION_STAGES[3].label,
+      stageDetail: 'Rendering neural frames via Gemini Omni Flash...',
+    }));
+
+    // Smoothly crawl progress from 75% up to 88% while Omni renders
+    let simulatedPercent = 75;
+    const progressInterval = setInterval(() => {
+      if (isCancelledRef.current) {
+        clearInterval(progressInterval);
+        return;
+      }
+      if (simulatedPercent < 88) {
+        simulatedPercent += 1;
+        setGenerationState((prev) => ({
+          ...prev,
+          progressPercent: simulatedPercent,
+        }));
+      }
+    }, 1200);
+
+    let aiResult: any = null;
+    try {
+      // Allow up to 90 seconds for real Omni video generation
+      aiResult = await Promise.race([
+        apiPromise,
+        new Promise((_, reject) => setTimeout(() => reject(new Error('Generation timeout')), 90000)),
+      ]);
+    } catch (err) {
+      console.warn('[AppContext] AI Generation completed with fallback notice:', err);
+    } finally {
+      clearInterval(progressInterval);
+    }
+
+    if (isCancelledRef.current) throw new Error('Cancelled');
+
+    // Stage 4: Adding voice & acoustic mastering
+    setGenerationState((prev) => ({
+      ...prev,
+      currentStageIndex: 4,
+      progressPercent: GENERATION_STAGES[4].percent,
+      stageName: GENERATION_STAGES[4].label,
+      stageDetail: GENERATION_STAGES[4].detail,
+    }));
+    await sleep(1200);
+
+    // Stage 5: Final editing
+    setGenerationState((prev) => ({
+      ...prev,
+      currentStageIndex: 5,
+      progressPercent: 98,
+      stageName: GENERATION_STAGES[5].label,
+      stageDetail: GENERATION_STAGES[5].detail,
+    }));
+    await sleep(800);
+
+    if (isCancelledRef.current) throw new Error('Cancelled');
+
+    const styleImages = THUMBNAILS_BY_STYLE[draft.styleId] || THUMBNAILS_BY_STYLE.cinematic;
+    const thumbnail = styleImages[Math.floor(Math.random() * styleImages.length)];
+
+    const STYLE_SAMPLE_VIDEOS: Record<string, string> = {
+      cinematic: 'https://test-videos.co.uk/vids/sintel/mp4/h264/1080/Sintel_1080_10s_5MB.mp4',
+      movie: 'https://test-videos.co.uk/vids/sintel/mp4/h264/720/Sintel_720_10s_5MB.mp4',
+      fashion: 'https://test-videos.co.uk/vids/jellyfish/mp4/h264/1080/Jellyfish_1080_10s_5MB.mp4',
+      realistic: 'https://test-videos.co.uk/vids/bigbuckbunny/mp4/h264/1080/Big_Buck_Bunny_1080_10s_5MB.mp4',
+      'social-media': 'https://test-videos.co.uk/vids/bigbuckbunny/mp4/h264/1080/Big_Buck_Bunny_1080_10s_5MB.mp4',
+      promotional: 'https://test-videos.co.uk/vids/sintel/mp4/h264/1080/Sintel_1080_10s_5MB.mp4',
+    };
+    const fallbackVideoUrl = STYLE_SAMPLE_VIDEOS[draft.styleId] || STYLE_SAMPLE_VIDEOS.cinematic;
+    const finalVideoUrl = aiResult?.videoUrl || fallbackVideoUrl;
+
+    const effectivePrompt = isScriptMode ? (draft.customScript || draft.prompt) : draft.prompt;
+    const title = aiResult?.title || (isScriptMode ? (draft.customScript?.slice(0, 32) || 'Custom Script Creation') : draft.prompt.split(',')[0].slice(0, 32));
+    const synopsis = aiResult?.synopsis;
+    const narrationScript = draft.narrationMode === 'visual_only'
+      ? undefined
+      : (isScriptMode && draft.customScript?.trim() ? draft.customScript.trim() : aiResult?.narrationScript);
+    const scenes = aiResult?.scenes;
+
+    const newVideo: VideoItem = {
+      id: newVideoId,
+      title: title.trim(),
+      prompt: effectivePrompt,
+      synopsis,
+      narrationScript,
+      scenes,
+      duration: durationLabel,
+      durationSeconds,
+      date: 'Just now',
+      createdAt: Date.now(),
+      status: 'completed',
+      thumbnailUrl: thumbnail,
+      videoUrl: finalVideoUrl,
+      style: selectedStyle,
+      styleId: draft.styleId,
+      voice: draft.voiceStyle === 'none' ? 'No Voice' : `${draft.voiceGender === 'female' ? 'Female' : 'Male'} ${draft.voiceStyle}`,
+      language: languageObj ? languageObj.name : 'English',
+      aspectRatio: draft.aspectRatio,
+      camera: draft.cameraStyle,
+      resolution: user.plan === 'Basic' ? '720p HD' : '1080p FHD',
+      fileSize: `${Math.round(durationSeconds * 0.55 * 10) / 10} MB`,
+      creditsUsed: cost,
+    };
+
+    setVideos((prev) => {
+      const updatedVideos = [newVideo, ...prev];
+      persistVideos(updatedVideos);
+      return updatedVideos;
+    });
+
+    setGenerationState({
+      isGenerating: false,
+      currentStageIndex: GENERATION_STAGES.length - 1,
+      progressPercent: 100,
+      stageName: 'Complete',
+      stageDetail: 'Your video is ready',
+      error: null,
+      generatedVideoId: newVideoId,
+    });
+
+    return newVideoId;
   };
 
   const getVideoById = (id: string): VideoItem | undefined => {

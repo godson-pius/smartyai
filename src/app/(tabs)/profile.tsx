@@ -98,6 +98,13 @@ export default function ProfileScreen() {
   };
 
   const creditPercentage = Math.round((user.creditsRemaining / user.totalCredits) * 100);
+  const totalMinutes = videos.reduce((acc, v) => acc + (v.durationSeconds || 60), 0) / 60;
+  const totalRenderedText = totalMinutes > 0 ? `${totalMinutes.toFixed(1)}m` : '0m';
+  const memberIdText = user.isGuest
+    ? 'Guest Explorer'
+    : user.uid
+      ? `ID: ${user.uid.slice(0, 10).toUpperCase()}`
+      : 'ID: LZ-CREATOR';
 
   return (
     <SafeAreaView style={styles.safeArea} edges={['top']}>
@@ -157,19 +164,19 @@ export default function ProfileScreen() {
                 </View>
               </View>
               <Text style={styles.creatorEmail}>{user.email}</Text>
-              <Text style={styles.creatorMemberId}>ID: LZ-99420-AI</Text>
+              <Text style={styles.creatorMemberId}>{memberIdText}</Text>
             </View>
           </View>
 
           {/* Quick Studio Metrics Bar */}
           <View style={styles.metricsBar}>
             <View style={styles.metricItem}>
-              <Text style={styles.metricValue}>{videos.length || 24}</Text>
+              <Text style={styles.metricValue}>{videos.length}</Text>
               <Text style={styles.metricLabel}>Creations</Text>
             </View>
             <View style={styles.metricDivider} />
             <View style={styles.metricItem}>
-              <Text style={styles.metricValue}>18.5m</Text>
+              <Text style={styles.metricValue}>{totalRenderedText}</Text>
               <Text style={styles.metricLabel}>Rendered</Text>
             </View>
             <View style={styles.metricDivider} />

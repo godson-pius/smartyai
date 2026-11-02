@@ -37,7 +37,7 @@ export const MOOD_OPTIONS = [
 ];
 
 export const PROMPT_SUGGESTIONS = [
-  'A cinematic scene of a young African entrepreneur walking through Kigali at sunset, golden hour light, bustling city backdrop.',
+  'A cinematic scene of a young African entrepreneur walking through Manchester at sunset, golden hour light, bustling city backdrop.',
   'A tranquil Japanese bamboo grove during morning mist, slow camera pan, ambient nature sound and calm atmosphere.',
   'Futuristic neon-lit street market in 2085 with cybernetic vendors and rainy reflections on asphalt.',
   'High-fashion runway model gliding under dramatic spotlight with flowing silk garments and electronic rhythm.',

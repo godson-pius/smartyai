@@ -1,22 +1,22 @@
-import React, { useState, useRef } from 'react';
-import {
-  View,
-  Text,
-  StyleSheet,
-  Dimensions,
-  TouchableOpacity,
-  FlatList,
-  NativeSyntheticEvent,
-  NativeScrollEvent,
-} from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
-import { useRouter } from 'expo-router';
-import { Image } from 'expo-image';
-import { LinearGradient } from 'expo-linear-gradient';
+import { BorderRadius, Colors, Shadows, Spacing } from '@/constants/theme';
+import { useApp } from '@/context/AppContext';
 import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
-import { useApp } from '@/context/AppContext';
-import { Colors, BorderRadius, Shadows, Spacing } from '@/constants/theme';
+import { Image } from 'expo-image';
+import { LinearGradient } from 'expo-linear-gradient';
+import { useRouter } from 'expo-router';
+import { useRef, useState } from 'react';
+import {
+  Dimensions,
+  FlatList,
+  NativeScrollEvent,
+  NativeSyntheticEvent,
+  StyleSheet,
+  Text,
+  TouchableOpacity,
+  View,
+} from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
 
@@ -74,7 +74,7 @@ export default function OnboardingScreen() {
   const flatListRef = useRef<FlatList>(null);
 
   const triggerHaptic = () => {
-    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => { });
   };
 
   const handleScroll = (event: NativeSyntheticEvent<NativeScrollEvent>) => {
@@ -136,7 +136,7 @@ export default function OnboardingScreen() {
               <Text style={styles.cardPromptTag}>Cinematic Tracking Shot</Text>
             </View>
             <Text style={styles.cardPromptText} numberOfLines={2}>
-              "A golden hour sunset over modern Kigali, vibrant street market, volumetric haze..."
+              "A golden hour sunset over modern Manchester, vibrant street market, volumetric haze..."
             </Text>
           </View>
         </View>

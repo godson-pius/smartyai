@@ -35,6 +35,15 @@
           "image": "./assets/images/splash-icon.png",
           "imageWidth": 76
         }
+      ],
+      "expo-video",
+      "expo-sharing",
+      [
+        "expo-media-library",
+        {
+          "photosPermission": "Allow Lazan to save generated videos to your photo library.",
+          "savePhotosPermission": "Allow Lazan to save generated videos to your photo library."
+        }
       ]
     ],
     "experiments": {

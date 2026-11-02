@@ -1,36 +1,115 @@
-import React, { useState } from 'react';
-import {
-  View,
-  Text,
-  StyleSheet,
-  ScrollView,
-  TouchableOpacity,
-  Pressable,
-  Share,
-  Alert,
-} from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
-import { useLocalSearchParams, useRouter } from 'expo-router';
-import { Image } from 'expo-image';
-import { LinearGradient } from 'expo-linear-gradient';
-import { Ionicons } from '@expo/vector-icons';
-import { useApp } from '@/context/AppContext';
-import { Header } from '@/components/common/Header';
 import { Button } from '@/components/common/Button';
 import { Card } from '@/components/common/Card';
 import { EmptyState } from '@/components/common/EmptyState';
-import { Colors, BorderRadius, Shadows, Spacing } from '@/constants/theme';
+import { Header } from '@/components/common/Header';
+import { BorderRadius, Colors, Shadows, Spacing } from '@/constants/theme';
+import { useApp } from '@/context/AppContext';
+import { Ionicons } from '@expo/vector-icons';
+import { Image } from 'expo-image';
+import { LinearGradient } from 'expo-linear-gradient';
+import { useLocalSearchParams, useRouter } from 'expo-router';
+import { useVideoPlayer, VideoView } from 'expo-video';
+import { useEffect, useRef, useState } from 'react';
+import {
+  Alert,
+  Platform,
+  Pressable,
+  ScrollView,
+  Share,
+  StyleSheet,
+  Text,
+  TouchableOpacity,
+  View,
+} from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
+import * as FileSystem from 'expo-file-system/legacy';
+import * as Haptics from 'expo-haptics';
+import * as MediaLibrary from 'expo-media-library/legacy';
+import * as Sharing from 'expo-sharing';
+
+const DEFAULT_SAMPLE_VIDEO = 'https://test-videos.co.uk/vids/sintel/mp4/h264/1080/Sintel_1080_10s_5MB.mp4';
 
 export default function VideoResultScreen() {
   const router = useRouter();
   const { id } = useLocalSearchParams<{ id: string }>();
-  const { getVideoById } = useApp();
+  const { getVideoById, deleteVideo } = useApp();
+
+  const video = id ? getVideoById(id) : undefined;
+  const rawVideoUri = video?.videoUrl || DEFAULT_SAMPLE_VIDEO;
+  // Guard against any remaining broken commondatastorage URLs
+  const videoUri = rawVideoUri.includes('commondatastorage.googleapis.com')
+    ? DEFAULT_SAMPLE_VIDEO
+    : rawVideoUri;
+
+  // Initialize native video player with looping and audio enabled
+  const player = useVideoPlayer(videoUri, (p) => {
+    p.loop = true;
+  });
+
+  const targetDuration = video?.durationSeconds && video.durationSeconds > 0
+    ? video.durationSeconds
+    : 15;
 
   const [isPlaying, setIsPlaying] = useState(false);
+  const [isMuted, setIsMuted] = useState(false);
+  const [playbackSeconds, setPlaybackSeconds] = useState(0);
+  const [durationSeconds, setDurationSeconds] = useState(targetDuration);
   const [isSaved, setIsSaved] = useState(true);
   const [downloadProgress, setDownloadProgress] = useState<number | null>(null);
 
-  const video = id ? getVideoById(id) : undefined;
+  const currentSourceRef = useRef(videoUri);
+
+  // Sync playback state from native player
+  useEffect(() => {
+    const playSub = player.addListener('playingChange', (event) => {
+      setIsPlaying(event.isPlaying);
+    });
+
+    const statusSub = player.addListener('statusChange', () => {
+      // Do not overwrite narrative duration (e.g. 120s / 2min) with raw clip duration
+      if (!video?.durationSeconds && player.duration > 0) {
+        setDurationSeconds(Math.round(player.duration));
+      }
+    });
+
+    return () => {
+      playSub.remove();
+      statusSub.remove();
+    };
+  }, [player, video?.durationSeconds]);
+
+  // Master narrative timeline ticker (syncs playback across the full video duration)
+  useEffect(() => {
+    let timer: ReturnType<typeof setInterval> | null = null;
+    if (isPlaying) {
+      timer = setInterval(() => {
+        setPlaybackSeconds((prev) => {
+          if (prev + 1 >= targetDuration) {
+            player.pause();
+            setIsPlaying(false);
+            return targetDuration;
+          }
+          return prev + 1;
+        });
+      }, 1000);
+    } else if (timer) {
+      clearInterval(timer);
+    }
+
+    return () => {
+      if (timer) clearInterval(timer);
+    };
+  }, [isPlaying, targetDuration, player]);
+
+  // Update source asynchronously only if route video URL actually changed
+  useEffect(() => {
+    if (videoUri && videoUri !== currentSourceRef.current) {
+      currentSourceRef.current = videoUri;
+      player.replaceAsync(videoUri).catch((err) => {
+        console.warn('Failed to switch video source:', err);
+      });
+    }
+  }, [videoUri, player]);
 
   if (!video) {
     return (
@@ -49,46 +128,194 @@ export default function VideoResultScreen() {
   }
 
   const handlePlayToggle = () => {
-    setIsPlaying((prev) => !prev);
+    if (isPlaying) {
+      player.pause();
+      setIsPlaying(false);
+    } else {
+      if (playbackSeconds >= targetDuration) {
+        setPlaybackSeconds(0);
+      }
+      player.play();
+      setIsPlaying(true);
+    }
   };
 
-  const handleDownload = () => {
+  const handleJumpToScene = (sceneIdx: number) => {
+    const totalScenes = video?.scenes?.length || 1;
+    const sceneSpan = targetDuration / totalScenes;
+    const newSec = Math.floor(sceneIdx * sceneSpan);
+    setPlaybackSeconds(newSec);
+    if (!isPlaying) {
+      player.play();
+      setIsPlaying(true);
+    }
+  };
+
+  const handleMuteToggle = () => {
+    player.muted = !player.muted;
+    setIsMuted(player.muted);
+  };
+
+  const handleDownload = async () => {
     if (downloadProgress !== null) return;
-    setDownloadProgress(20);
-    const interval = setInterval(() => {
-      setDownloadProgress((prev) => {
-        if (prev === null) return null;
-        if (prev >= 100) {
-          clearInterval(interval);
-          setTimeout(() => {
-            setDownloadProgress(null);
-            Alert.alert('Saved to Camera Roll', 'Your 1080p Full HD video has been saved to your photo library.');
-          }, 300);
-          return 100;
+    if (!video) return;
+
+    try {
+      setDownloadProgress(10);
+
+      // Web platform: trigger browser download
+      if (Platform.OS === 'web') {
+        if (typeof document !== 'undefined') {
+          const a = document.createElement('a');
+          a.href = videoUri;
+          a.download = `${(video.title || 'lazan_video').replace(/[^a-z0-9_-]/gi, '_')}.mp4`;
+          document.body.appendChild(a);
+          a.click();
+          document.body.removeChild(a);
         }
-        return prev + 30;
-      });
-    }, 250);
+        setDownloadProgress(100);
+        setTimeout(() => setDownloadProgress(null), 800);
+        Alert.alert('Download Started', 'Your video download has started in your browser.');
+        return;
+      }
+
+      // Native platform (iOS / Android)
+      setDownloadProgress(20);
+      const permission = await MediaLibrary.requestPermissionsAsync();
+
+      let localFilePath = videoUri;
+
+      // If it's a remote URL or data URI, ensure we have a local cached file
+      if (videoUri.startsWith('http://') || videoUri.startsWith('https://')) {
+        setDownloadProgress(40);
+        const fileName = `lazan_${video.id || Date.now()}.mp4`;
+        const cacheTarget = `${FileSystem.cacheDirectory || ''}${fileName}`;
+        const downloadRes = await FileSystem.downloadAsync(videoUri, cacheTarget);
+        localFilePath = downloadRes.uri;
+        setDownloadProgress(75);
+      } else if (videoUri.startsWith('data:video/mp4;base64,')) {
+        setDownloadProgress(40);
+        const base64Data = videoUri.split('base64,')[1];
+        const fileName = `lazan_${video.id || Date.now()}.mp4`;
+        const cacheTarget = `${FileSystem.cacheDirectory || ''}${fileName}`;
+        await FileSystem.writeAsStringAsync(cacheTarget, base64Data, {
+          encoding: FileSystem.EncodingType.Base64,
+        });
+        localFilePath = cacheTarget;
+        setDownloadProgress(75);
+      } else {
+        setDownloadProgress(60);
+      }
+
+      // Save asset to user's Photo / Media library
+      if (permission.granted) {
+        setDownloadProgress(85);
+        const asset = await MediaLibrary.createAssetAsync(localFilePath);
+
+        try {
+          const album = await MediaLibrary.getAlbumAsync('Lazan');
+          if (!album) {
+            await MediaLibrary.createAlbumAsync('Lazan', asset, false);
+          } else {
+            await MediaLibrary.addAssetsToAlbumAsync([asset], album, false);
+          }
+        } catch {
+          // Non-fatal if album addition fails
+        }
+
+        try {
+          await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+        } catch {
+          // Haptics optional
+        }
+
+        setDownloadProgress(100);
+        setTimeout(() => {
+          setDownloadProgress(null);
+          Alert.alert(
+            'Saved to Photos',
+            'Your video has been saved directly to your phone camera roll.'
+          );
+        }, 300);
+      } else {
+        // Fallback to native system share/save sheet if camera roll permission wasn't granted
+        setDownloadProgress(null);
+        Alert.alert(
+          'Photo Library Access Required',
+          'Permission to access your Photos library was not granted. Would you like to save or export the video file using the system share sheet?',
+          [
+            { text: 'Cancel', style: 'cancel' },
+            {
+              text: 'Save via Sheet',
+              onPress: async () => {
+                if (await Sharing.isAvailableAsync()) {
+                  await Sharing.shareAsync(localFilePath);
+                }
+              },
+            },
+          ]
+        );
+      }
+    } catch (error: any) {
+      console.error('[Download] Failed to save video:', error);
+      setDownloadProgress(null);
+      Alert.alert(
+        'Save Failed',
+        error?.message || 'Unable to save the video to your camera roll. Please check your storage and try again.'
+      );
+    }
   };
 
   const handleShare = async () => {
     try {
-      await Share.share({
-        title: video.title,
-        message: `Watch my AI-generated video "${video.title}": https://lazan.ai/v/${video.id}`,
-      });
+      if (Platform.OS !== 'web' && videoUri.startsWith('file://') && (await Sharing.isAvailableAsync())) {
+        await Sharing.shareAsync(videoUri, {
+          dialogTitle: `Share "${video?.title || 'Lazan Video'}"`,
+        });
+      } else {
+        await Share.share({
+          title: video?.title || 'Lazan AI Video',
+          message: `Watch my AI-generated video "${video?.title || 'Lazan AI Video'}": ${video?.videoUrl || `https://lazan.ai/v/${video?.id}`}`,
+        });
+      }
     } catch (error) {
       // dismissed
     }
   };
 
+  const handleDelete = () => {
+    Alert.alert(
+      'Delete Video',
+      'Are you sure you want to delete this video from your library? This cannot be undone.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Delete',
+          style: 'destructive',
+          onPress: () => {
+            player.pause();
+            deleteVideo(video.id);
+            router.replace('/(tabs)/videos');
+          },
+        },
+      ]
+    );
+  };
+
   const handleCreateAnother = () => {
+    player.pause();
     router.replace('/(tabs)/create');
   };
 
   const handleBackToLibrary = () => {
+    player.pause();
     router.replace('/(tabs)/videos');
   };
+
+  const totalSec = durationSeconds > 0 ? durationSeconds : video.durationSeconds || 15;
+  const progressPercent = Math.min(Math.round((playbackSeconds / totalSec) * 100), 100);
+  const formattedPlaybackTime = `${Math.floor(playbackSeconds / 60)}:${(playbackSeconds % 60) < 10 ? '0' : ''}${playbackSeconds % 60}`;
+  const formattedDurationTime = `${Math.floor(totalSec / 60)}:${(totalSec % 60) < 10 ? '0' : ''}${totalSec % 60}`;
 
   return (
     <SafeAreaView style={styles.safeArea} edges={['top']}>
@@ -99,12 +326,20 @@ export default function VideoResultScreen() {
           showBack
           onBack={handleBackToLibrary}
           rightAction={
-            <TouchableOpacity
-              activeOpacity={0.7}
-              onPress={handleShare}
-              style={styles.shareIconButton}>
-              <Ionicons name="share-outline" size={19} color="#FFFFFF" />
-            </TouchableOpacity>
+            <View style={styles.headerRightActions}>
+              <TouchableOpacity
+                activeOpacity={0.7}
+                onPress={handleDelete}
+                style={styles.deleteIconButton}>
+                <Ionicons name="trash-outline" size={18} color="#EF4444" />
+              </TouchableOpacity>
+              <TouchableOpacity
+                activeOpacity={0.7}
+                onPress={handleShare}
+                style={styles.shareIconButton}>
+                <Ionicons name="share-outline" size={19} color="#FFFFFF" />
+              </TouchableOpacity>
+            </View>
           }
         />
       </View>
@@ -117,46 +352,76 @@ export default function VideoResultScreen() {
           <View style={styles.sparkleIcon}>
             <Ionicons name="sparkles" size={16} color="#A855F7" />
           </View>
-          <Text style={styles.celebrationTitle}>Your video is ready 🎉</Text>
+          <Text style={styles.celebrationTitle}>Your video is ready</Text>
         </View>
 
-        {/* Video Player Preview Area */}
+        {/* Video Player Preview Area with Native Video & Audio Playback */}
         <View style={[styles.playerContainer, Shadows.glow]}>
           <Pressable onPress={handlePlayToggle} style={styles.mediaWrap}>
-            <Image
-              source={{ uri: video.thumbnailUrl }}
-              style={styles.thumbnailImage}
+            {/* Native Video Surface */}
+            <VideoView
+              player={player}
+              style={styles.videoView}
               contentFit="cover"
-              transition={200}
-            />
-            <LinearGradient
-              colors={['rgba(9, 10, 15, 0.4)', 'transparent', 'rgba(9, 10, 15, 0.85)']}
-              style={styles.playerVignette}
+              nativeControls={false}
             />
 
-            {/* Play / Pause Overlay */}
-            <View style={styles.playCenterButton}>
-              <Ionicons
-                name={isPlaying ? 'pause' : 'play'}
-                size={34}
-                color="#FFFFFF"
-                style={{ marginLeft: isPlaying ? 0 : 4 }}
+            {/* Poster thumbnail before playback begins */}
+            {!isPlaying && playbackSeconds === 0 && (
+              <Image
+                source={{ uri: video.thumbnailUrl }}
+                style={styles.thumbnailImage}
+                contentFit="cover"
+                transition={200}
               />
-            </View>
+            )}
+
+            <LinearGradient
+              colors={['rgba(9, 10, 15, 0.45)', 'transparent', 'rgba(9, 10, 15, 0.85)']}
+              style={styles.playerVignette}
+              pointerEvents="none"
+            />
+
+            {/* Play Overlay Button (Hidden while playing for clear viewing) */}
+            {!isPlaying && (
+              <View style={styles.playCenterButton} pointerEvents="none">
+                <Ionicons
+                  name="play"
+                  size={34}
+                  color="#FFFFFF"
+                  style={{ marginLeft: 4 }}
+                />
+              </View>
+            )}
 
             {/* Top Bar Badges */}
             <View style={styles.playerTopBar}>
-              <View style={styles.hdBadge}>
-                <Text style={styles.hdBadgeText}>{video.resolution}</Text>
+              <View style={styles.topBarLeft}>
+                <View style={styles.hdBadge}>
+                  <Text style={styles.hdBadgeText}>{video.resolution}</Text>
+                </View>
+
+                <View style={styles.ratioBadge}>
+                  <Text style={styles.ratioBadgeText}>{video.aspectRatio}</Text>
+                </View>
               </View>
 
-              <View style={styles.ratioBadge}>
-                <Text style={styles.ratioBadgeText}>{video.aspectRatio}</Text>
-              </View>
+              {/* Sound / Mute Toggle Pill */}
+              <TouchableOpacity
+                activeOpacity={0.8}
+                onPress={handleMuteToggle}
+                style={styles.audioBadge}>
+                <Ionicons
+                  name={isMuted ? 'volume-mute' : 'volume-high'}
+                  size={14}
+                  color={isMuted ? '#EF4444' : '#FFFFFF'}
+                />
+                <Text style={styles.audioBadgeText}>{isMuted ? 'Muted' : 'Sound'}</Text>
+              </TouchableOpacity>
             </View>
 
             {/* Bottom Scrubber Bar */}
-            <View style={styles.playerControlsBar}>
+            <View style={styles.playerControlsBar} pointerEvents="none">
               <View style={styles.timelineTrack}>
                 <LinearGradient
                   colors={['#6366F1', '#8B5CF6', '#EC4899']}
@@ -164,16 +429,16 @@ export default function VideoResultScreen() {
                   end={{ x: 1, y: 0 }}
                   style={[
                     styles.timelineProgress,
-                    { width: isPlaying ? '65%' : '0%' },
+                    { width: `${progressPercent}%` },
                   ]}
                 />
               </View>
 
               <View style={styles.timelineTimeRow}>
                 <Text style={styles.timeCodeText}>
-                  {isPlaying ? '0:38' : '0:00'}
+                  {formattedPlaybackTime}
                 </Text>
-                <Text style={styles.timeCodeText}>{video.duration}</Text>
+                <Text style={styles.timeCodeText}>{formattedDurationTime}</Text>
               </View>
             </View>
           </Pressable>
@@ -183,6 +448,12 @@ export default function VideoResultScreen() {
         <View style={styles.metaSection}>
           <Text style={styles.videoTitle}>{video.title}</Text>
           <Text style={styles.promptSummary}>"{video.prompt}"</Text>
+
+          {video.synopsis ? (
+            <View style={styles.synopsisWrap}>
+              <Text style={styles.synopsisText}>{video.synopsis}</Text>
+            </View>
+          ) : null}
 
           {/* Details Card */}
           <Card style={styles.detailsCard} padding={16}>
@@ -233,7 +504,138 @@ export default function VideoResultScreen() {
           </Card>
         </View>
 
-        {/* Primary Action Buttons: Play, Download, Share */}
+        {/* AI Screenplay & Storyboard Breakdown (Generated via Gemini 3.8 Flash) */}
+        {video.narrationScript ? (
+          <View style={styles.storyboardSection}>
+            <View style={styles.sectionHeaderRow}>
+              <View style={styles.directorPill}>
+                <Ionicons name="sparkles" size={13} color="#C4B5FD" />
+                <Text style={styles.directorPillText}>AI DIRECTOR PACKAGE</Text>
+              </View>
+              <Text style={styles.directorModelTag}>Powered by Lazan</Text>
+            </View>
+
+            {/* Voiceover Script Card */}
+            {video.narrationScript ? (
+              <Card style={styles.scriptCard} padding={16}>
+                <View style={styles.scriptCardHeader}>
+                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                    <Ionicons name="mic" size={16} color="#A855F7" />
+                    <Text style={styles.scriptCardTitle}>Full Voiceover Screenplay</Text>
+                  </View>
+                  <View style={styles.fullScriptBadge}>
+                    <Text style={styles.fullScriptBadgeText}>
+                      {video.narrationScript.trim().split(/\s+/).filter(Boolean).length} words • {video.duration}
+                    </Text>
+                  </View>
+                </View>
+                <Text selectable style={styles.narrationBody}>
+                  "{video.narrationScript}"
+                </Text>
+              </Card>
+            ) : null}
+
+            {/* Scene-by-Scene Storyboard with Interactive Timeline Sync */}
+            {video.scenes && video.scenes.length > 0 ? (
+              <View style={styles.scenesContainer}>
+                <View style={styles.scenesHeaderRow}>
+                  <Text style={styles.scenesHeadline}>Cinematic Scene Breakdown</Text>
+                  <Text style={styles.scenesCountBadge}>
+                    {video.scenes.length} Scenes • Tap to jump
+                  </Text>
+                </View>
+
+                {video.scenes.map((scene, idx) => {
+                  const totalScenes = video.scenes?.length || 1;
+                  const sceneSpan = targetDuration / totalScenes;
+                  const sceneStart = Math.floor(idx * sceneSpan);
+                  const sceneEnd = Math.floor((idx + 1) * sceneSpan);
+                  const isCurrentScene =
+                    isPlaying &&
+                    playbackSeconds >= sceneStart &&
+                    playbackSeconds < sceneEnd;
+                  const formatTime = (sec: number) =>
+                    `${Math.floor(sec / 60)}:${sec % 60 < 10 ? '0' : ''}${sec % 60}`;
+
+                  return (
+                    <TouchableOpacity
+                      key={scene.sceneNumber}
+                      activeOpacity={0.85}
+                      onPress={() => handleJumpToScene(idx)}
+                      style={[
+                        styles.sceneCard,
+                        isCurrentScene && styles.sceneCardActive,
+                      ]}>
+                      <View style={styles.sceneCardTop}>
+                        <View
+                          style={[
+                            styles.sceneNumberBadge,
+                            isCurrentScene && styles.sceneNumberBadgeActive,
+                          ]}>
+                          <Text
+                            style={[
+                              styles.sceneNumberText,
+                              isCurrentScene && styles.sceneNumberTextActive,
+                            ]}>
+                            Scene {scene.sceneNumber}
+                          </Text>
+                        </View>
+
+                        <View style={styles.sceneTimeBadge}>
+                          <Ionicons
+                            name="time-outline"
+                            size={12}
+                            color={isCurrentScene ? '#C084FC' : '#64748B'}
+                          />
+                          <Text
+                            style={[
+                              styles.sceneTimeBadgeText,
+                              isCurrentScene && { color: '#C084FC', fontWeight: '700' },
+                            ]}>
+                            {scene.timestamp ||
+                              `${formatTime(sceneStart)} - ${formatTime(sceneEnd)}`}
+                          </Text>
+                        </View>
+
+                        {isCurrentScene && (
+                          <View style={styles.nowPlayingBadge}>
+                            <View style={styles.nowPlayingDot} />
+                            <Text style={styles.nowPlayingText}>PLAYING</Text>
+                          </View>
+                        )}
+
+                        <View style={styles.shotTypeBadge}>
+                          <Text style={styles.shotTypeBadgeText}>{scene.shotType}</Text>
+                        </View>
+                      </View>
+
+                      <Text style={styles.sceneTitle}>{scene.title}</Text>
+                      <Text style={styles.sceneDescription}>{scene.visualDescription}</Text>
+                      <View style={styles.cameraRow}>
+                        <Ionicons name="videocam-outline" size={13} color="#A855F7" />
+                        <Text style={styles.cameraNote}>{scene.cameraMovement}</Text>
+                      </View>
+                      {scene.narrationSnippet ? (
+                        <View style={styles.sceneNarrationRow}>
+                          <Ionicons
+                            name="chatbubble-ellipses-outline"
+                            size={12}
+                            color="#64748B"
+                          />
+                          <Text style={styles.sceneNarrationSnippet}>
+                            "{scene.narrationSnippet}"
+                          </Text>
+                        </View>
+                      ) : null}
+                    </TouchableOpacity>
+                  );
+                })}
+              </View>
+            ) : null}
+          </View>
+        ) : null}
+
+        {/* Primary Action Buttons: Play/Pause, Sound Toggle, Download, Share */}
         <View style={styles.actionsGroup}>
           <View style={styles.primaryActionsRow}>
             <View style={{ flex: 1 }}>
@@ -245,6 +647,16 @@ export default function VideoResultScreen() {
                 fullWidth
               />
             </View>
+            <TouchableOpacity
+              activeOpacity={0.8}
+              onPress={handleMuteToggle}
+              style={[styles.soundControlButton, isMuted && styles.soundControlButtonMuted]}>
+              <Ionicons
+                name={isMuted ? 'volume-mute-outline' : 'volume-high-outline'}
+                size={22}
+                color={isMuted ? '#EF4444' : '#C4B5FD'}
+              />
+            </TouchableOpacity>
             <View style={{ flex: 1 }}>
               <Button
                 label={downloadProgress !== null ? `Saving ${downloadProgress}%` : 'Download'}
@@ -309,6 +721,21 @@ const styles = StyleSheet.create({
     paddingBottom: Spacing.huge,
     gap: 16,
   },
+  headerRightActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  deleteIconButton: {
+    width: 38,
+    height: 38,
+    borderRadius: 19,
+    backgroundColor: 'rgba(239, 68, 68, 0.12)',
+    borderWidth: 1,
+    borderColor: 'rgba(239, 68, 68, 0.25)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
   shareIconButton: {
     width: 38,
     height: 38,
@@ -352,6 +779,12 @@ const styles = StyleSheet.create({
     position: 'relative',
     justifyContent: 'center',
     alignItems: 'center',
+    backgroundColor: '#050608',
+  },
+  videoView: {
+    width: '100%',
+    height: '100%',
+    position: 'absolute',
   },
   thumbnailImage: {
     width: '100%',
@@ -383,6 +816,11 @@ const styles = StyleSheet.create({
     right: 12,
     flexDirection: 'row',
     justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  topBarLeft: {
+    flexDirection: 'row',
+    gap: 8,
   },
   hdBadge: {
     backgroundColor: 'rgba(9, 10, 15, 0.85)',
@@ -408,35 +846,53 @@ const styles = StyleSheet.create({
   ratioBadgeText: {
     color: '#FFF',
     fontSize: 11,
-    fontWeight: '600',
+    fontWeight: '800',
+  },
+  audioBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    backgroundColor: 'rgba(9, 10, 15, 0.85)',
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.2)',
+  },
+  audioBadgeText: {
+    color: '#FFFFFF',
+    fontSize: 11,
+    fontWeight: '700',
   },
   playerControlsBar: {
     position: 'absolute',
     bottom: 0,
     left: 0,
     right: 0,
-    backgroundColor: 'rgba(9, 10, 15, 0.9)',
-    paddingHorizontal: 12,
-    paddingVertical: 8,
+    paddingHorizontal: 14,
+    paddingBottom: 10,
+    backgroundColor: 'rgba(9, 10, 15, 0.6)',
   },
   timelineTrack: {
     height: 4,
-    backgroundColor: '#1E2436',
+    backgroundColor: 'rgba(255, 255, 255, 0.25)',
     borderRadius: 2,
     overflow: 'hidden',
+    marginBottom: 6,
   },
   timelineProgress: {
     height: '100%',
+    borderRadius: 2,
   },
   timelineTimeRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
-    marginTop: 6,
   },
   timeCodeText: {
-    color: '#CBD5E1',
+    color: 'rgba(255, 255, 255, 0.85)',
     fontSize: 10,
     fontWeight: '600',
+    fontVariant: ['tabular-nums'],
   },
   metaSection: {
     gap: 8,
@@ -448,67 +904,68 @@ const styles = StyleSheet.create({
     letterSpacing: -0.4,
   },
   promptSummary: {
-    fontSize: 13,
-    color: Colors.textSecondary,
+    fontSize: 14,
+    color: '#94A3B8',
+    lineHeight: 20,
     fontStyle: 'italic',
-    lineHeight: 18,
   },
   detailsCard: {
-    backgroundColor: '#121522',
-    borderRadius: BorderRadius.xl,
     marginTop: 4,
+    backgroundColor: '#131622',
+    borderWidth: 1,
+    borderColor: '#23293D',
   },
   detailRow: {
     flexDirection: 'row',
+    justifyContent: 'space-between',
     alignItems: 'center',
-    justifyContent: 'space-around',
+    paddingBottom: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: 'rgba(255, 255, 255, 0.06)',
   },
   detailItem: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 8,
-  },
-  detailLabel: {
-    fontSize: 10,
-    color: Colors.textMuted,
-    textTransform: 'uppercase',
-    fontWeight: '700',
-    letterSpacing: 0.5,
-  },
-  detailValue: {
-    fontSize: 13,
-    fontWeight: '800',
-    color: '#FFFFFF',
-    marginTop: 1,
+    flex: 1,
   },
   detailDivider: {
     width: 1,
     height: 24,
-    backgroundColor: '#1E2436',
+    backgroundColor: 'rgba(255, 255, 255, 0.08)',
+    marginHorizontal: 4,
+  },
+  detailLabel: {
+    fontSize: 10,
+    color: '#64748B',
+    fontWeight: '600',
+  },
+  detailValue: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: '#F8FAFC',
+    marginTop: 1,
   },
   secondDetailRow: {
     flexDirection: 'row',
-    flexWrap: 'wrap',
     gap: 8,
-    marginTop: 14,
-    paddingTop: 12,
-    borderTopWidth: 1,
-    borderTopColor: '#1E2436',
+    marginTop: 12,
+    flexWrap: 'wrap',
   },
   tagPill: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 4,
-    backgroundColor: '#0C0E16',
+    gap: 5,
+    backgroundColor: 'rgba(139, 92, 246, 0.12)',
     paddingHorizontal: 8,
     paddingVertical: 4,
-    borderRadius: 6,
+    borderRadius: 8,
     borderWidth: 1,
-    borderColor: '#1D2336',
+    borderColor: 'rgba(139, 92, 246, 0.25)',
   },
   tagPillText: {
     fontSize: 11,
-    color: Colors.textSecondary,
+    color: '#C4B5FD',
     fontWeight: '600',
   },
   actionsGroup: {
@@ -517,22 +974,262 @@ const styles = StyleSheet.create({
   },
   primaryActionsRow: {
     flexDirection: 'row',
-    gap: 10,
+    alignItems: 'center',
+    gap: 8,
+  },
+  soundControlButton: {
+    width: 48,
+    height: 48,
+    borderRadius: 14,
+    backgroundColor: 'rgba(139, 92, 246, 0.15)',
+    borderWidth: 1,
+    borderColor: 'rgba(139, 92, 246, 0.35)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  soundControlButtonMuted: {
+    backgroundColor: 'rgba(239, 68, 68, 0.12)',
+    borderColor: 'rgba(239, 68, 68, 0.3)',
   },
   secondaryActionsGroup: {
-    gap: 12,
     marginTop: 8,
+    gap: 12,
+    alignItems: 'center',
   },
   saveToLibraryBtn: {
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'center',
-    gap: 8,
-    paddingVertical: 12,
+    gap: 6,
+    paddingVertical: 10,
+    paddingHorizontal: 16,
   },
   saveToLibraryText: {
-    fontSize: 14,
-    fontWeight: '600',
     color: Colors.textSecondary,
+    fontSize: 13,
+    fontWeight: '600',
+  },
+  synopsisWrap: {
+    backgroundColor: 'rgba(139, 92, 246, 0.08)',
+    borderLeftWidth: 3,
+    borderLeftColor: '#8B5CF6',
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    borderRadius: 8,
+    marginTop: 2,
+  },
+  synopsisText: {
+    color: '#E2E8F0',
+    fontSize: 13,
+    lineHeight: 18,
+    fontWeight: '500',
+  },
+  storyboardSection: {
+    marginTop: 8,
+    gap: 12,
+  },
+  sectionHeaderRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginTop: 4,
+  },
+  directorPill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    backgroundColor: 'rgba(139, 92, 246, 0.18)',
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: 'rgba(139, 92, 246, 0.4)',
+  },
+  directorPillText: {
+    color: '#C4B5FD',
+    fontSize: 11,
+    fontWeight: '800',
+    letterSpacing: 0.5,
+  },
+  directorModelTag: {
+    color: '#64748B',
+    fontSize: 11,
+    fontWeight: '600',
+  },
+  scriptCard: {
+    backgroundColor: '#111422',
+    borderWidth: 1,
+    borderColor: '#23293D',
+  },
+  scriptCardHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 8,
+  },
+  fullScriptBadge: {
+    backgroundColor: 'rgba(139, 92, 246, 0.15)',
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: 'rgba(139, 92, 246, 0.3)',
+  },
+  fullScriptBadgeText: {
+    color: '#C4B5FD',
+    fontSize: 11,
+    fontWeight: '700',
+  },
+  scriptCardTitle: {
+    color: '#F8FAFC',
+    fontSize: 13,
+    fontWeight: '700',
+  },
+  narrationBody: {
+    color: '#CBD5E1',
+    fontSize: 13,
+    lineHeight: 20,
+    fontStyle: 'italic',
+  },
+  scenesContainer: {
+    gap: 10,
+    marginTop: 4,
+  },
+  scenesHeaderRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 4,
+  },
+  scenesHeadline: {
+    color: '#F8FAFC',
+    fontSize: 14,
+    fontWeight: '800',
+    letterSpacing: -0.2,
+  },
+  scenesCountBadge: {
+    color: '#94A3B8',
+    fontSize: 11,
+    fontWeight: '600',
+  },
+  sceneCard: {
+    backgroundColor: '#131622',
+    borderWidth: 1.5,
+    borderColor: '#1E2438',
+    borderRadius: 14,
+    padding: 14,
+    gap: 6,
+  },
+  sceneCardActive: {
+    borderColor: '#8B5CF6',
+    backgroundColor: '#18152B',
+  },
+  sceneCardTop: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    flexWrap: 'wrap',
+  },
+  sceneNumberBadge: {
+    backgroundColor: 'rgba(139, 92, 246, 0.2)',
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 6,
+  },
+  sceneNumberBadgeActive: {
+    backgroundColor: '#8B5CF6',
+  },
+  sceneNumberText: {
+    color: '#C4B5FD',
+    fontSize: 11,
+    fontWeight: '700',
+  },
+  sceneNumberTextActive: {
+    color: '#FFFFFF',
+  },
+  sceneTimeBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    backgroundColor: 'rgba(255, 255, 255, 0.05)',
+    paddingHorizontal: 7,
+    paddingVertical: 3,
+    borderRadius: 6,
+  },
+  sceneTimeBadgeText: {
+    color: '#94A3B8',
+    fontSize: 11,
+    fontWeight: '500',
+  },
+  nowPlayingBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    backgroundColor: 'rgba(139, 92, 246, 0.25)',
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 6,
+    borderWidth: 1,
+    borderColor: '#A855F7',
+  },
+  nowPlayingDot: {
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+    backgroundColor: '#C084FC',
+  },
+  nowPlayingText: {
+    color: '#C084FC',
+    fontSize: 9,
+    fontWeight: '800',
+    letterSpacing: 0.5,
+  },
+  shotTypeBadge: {
+    backgroundColor: 'rgba(255, 255, 255, 0.08)',
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 6,
+  },
+  shotTypeBadgeText: {
+    color: '#94A3B8',
+    fontSize: 11,
+    fontWeight: '600',
+  },
+  sceneTitle: {
+    color: '#FFFFFF',
+    fontSize: 14,
+    fontWeight: '700',
+  },
+  sceneDescription: {
+    color: '#94A3B8',
+    fontSize: 12,
+    lineHeight: 18,
+  },
+  cameraRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    marginTop: 4,
+    backgroundColor: 'rgba(0, 0, 0, 0.3)',
+    paddingVertical: 4,
+    paddingHorizontal: 8,
+    borderRadius: 6,
+  },
+  cameraNote: {
+    color: '#CBD5E1',
+    fontSize: 11,
+    fontWeight: '500',
+    flex: 1,
+  },
+  sceneNarrationRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    marginTop: 2,
+  },
+  sceneNarrationSnippet: {
+    color: '#64748B',
+    fontSize: 11,
+    fontStyle: 'italic',
+    flex: 1,
   },
 });

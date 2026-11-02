@@ -1,34 +1,47 @@
-import React, { useState } from 'react';
+import { CreditBalance } from '@/components/common/CreditBalance';
+import { Header } from '@/components/common/Header';
+import { AdvancedOptions } from '@/components/create/AdvancedOptions';
+import { DurationSelector } from '@/components/create/DurationSelector';
+import { StyleSelector } from '@/components/create/StyleSelector';
+import { BorderRadius, Colors, Shadows, Spacing } from '@/constants/theme';
+import { useApp } from '@/context/AppContext';
+import { ASPECT_RATIOS, PROMPT_SUGGESTIONS } from '@/data/advancedOptions';
+import { DURATION_OPTIONS } from '@/data/plans';
+import { VIDEO_STYLES } from '@/data/styles';
+import { VOICE_LANGUAGES, VOICE_STYLES, VoiceGender } from '@/data/voices';
+import { Ionicons } from '@expo/vector-icons';
+import { LinearGradient } from 'expo-linear-gradient';
+import { useRouter } from 'expo-router';
+import { useState } from 'react';
 import {
-  View,
-  Text,
-  StyleSheet,
+  Alert,
+  KeyboardAvoidingView,
+  Modal,
+  Platform,
+  Pressable,
   ScrollView,
+  StyleSheet,
+  Text,
   TextInput,
   TouchableOpacity,
-  KeyboardAvoidingView,
-  Platform,
-  Alert,
-  Modal,
-  Pressable,
+  View,
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
-import { useRouter } from 'expo-router';
-import { LinearGradient } from 'expo-linear-gradient';
-import { Ionicons } from '@expo/vector-icons';
-import { useApp } from '@/context/AppContext';
-import { Header } from '@/components/common/Header';
-import { StyleSelector } from '@/components/create/StyleSelector';
-import { DurationSelector } from '@/components/create/DurationSelector';
-import { AdvancedOptions } from '@/components/create/AdvancedOptions';
-import { CreditBalance } from '@/components/common/CreditBalance';
-import { Button } from '@/components/common/Button';
-import { VIDEO_STYLES } from '@/data/styles';
-import { DURATION_OPTIONS } from '@/data/plans';
-import { VOICE_LANGUAGES, VOICE_STYLES, VoiceGender, VoiceStyle } from '@/data/voices';
-import { ASPECT_RATIOS } from '@/data/advancedOptions';
-import { PROMPT_SUGGESTIONS } from '@/data/advancedOptions';
-import { Colors, BorderRadius, Shadows, Spacing } from '@/constants/theme';
+
+const SAMPLE_SCRIPTS = [
+  {
+    title: 'Product Ad',
+    script: 'Stop wasting hours on complex video editing. Meet the future of generative cinema. Pure light, pure story, instant high definition.',
+  },
+  {
+    title: 'Documentary',
+    script: 'Deep within the Serengeti plains, a lone cheetah stands motionless in the amber morning mist. Nature holds its breath before the sprint begins.',
+  },
+  {
+    title: 'Founder Story',
+    script: 'We built this not because it was easy, but because creators needed a bolder canvas. The future of visual storytelling starts right now.',
+  },
+];
 
 export default function CreateScreen() {
   const router = useRouter();
@@ -44,6 +57,8 @@ export default function CreateScreen() {
 
   const [isImproving, setIsImproving] = useState(false);
   const [showVoiceModal, setShowVoiceModal] = useState(false);
+  const [showTrialModal, setShowTrialModal] = useState(false);
+  const [showProModal, setShowProModal] = useState(false);
 
   const selectedStyle = VIDEO_STYLES.find((s) => s.id === draft.styleId) || VIDEO_STYLES[0];
   const selectedDuration = DURATION_OPTIONS.find((d) => d.id === draft.durationId) || DURATION_OPTIONS[1];
@@ -71,9 +86,29 @@ export default function CreateScreen() {
   };
 
   const handleGenerate = () => {
-    if (!draft.prompt.trim()) {
-      Alert.alert('Please describe your video', 'Type a prompt or tap one of our suggested ideas to get started.');
-      return;
+    if (draft.mode === 'script') {
+      if (!draft.customScript || !draft.customScript.trim()) {
+        Alert.alert(
+          'Please enter your script',
+          'Paste your custom script or screenplay to generate your video.'
+        );
+        return;
+      }
+
+      if (user.plan === 'Basic') {
+        if (!user.hasUsedScriptTrial) {
+          setShowTrialModal(true);
+          return;
+        } else {
+          setShowProModal(true);
+          return;
+        }
+      }
+    } else {
+      if (!draft.prompt.trim()) {
+        Alert.alert('Please describe your video', 'Type a prompt or tap one of our suggested ideas to get started.');
+        return;
+      }
     }
 
     if (!hasEnoughCredits) {
@@ -111,60 +146,242 @@ export default function CreateScreen() {
             { paddingBottom: bottomBarBottom + 70 },
           ]}
           keyboardShouldPersistTaps="handled">
-          
-          {/* 1. HERO PROMPT CANVAS */}
-          <View style={styles.canvasCard}>
-            <TextInput
-              style={styles.promptInput}
-              multiline
-              numberOfLines={4}
-              maxLength={500}
-              placeholder="Describe your video in detail... e.g. A cinematic scene of a young African entrepreneur walking through Kigali at sunset, golden hour light..."
-              placeholderTextColor="#64748B"
-              value={draft.prompt}
-              onChangeText={(text) => updateDraft({ prompt: text })}
-            />
 
-            {/* Bottom Bar inside the Canvas */}
-            <View style={styles.canvasFooter}>
-              <TouchableOpacity
-                activeOpacity={0.8}
-                onPress={handleImproveIdea}
-                disabled={isImproving}
-                style={styles.magicEnhanceButton}>
-                <Ionicons name="sparkles" size={13} color="#C4B5FD" />
-                <Text style={styles.magicEnhanceText}>
-                  {isImproving ? 'Polishing prompt...' : '✨ Enhance Idea'}
-                </Text>
-              </TouchableOpacity>
-
-              <Text style={styles.characterCount}>
-                {draft.prompt.length}/500
+          {/* MODE SELECTOR: QUICK PROMPT VS CUSTOM SCRIPT */}
+          <View style={styles.modeSegmentContainer}>
+            <TouchableOpacity
+              activeOpacity={0.8}
+              onPress={() => updateDraft({ mode: 'prompt' })}
+              style={[
+                styles.modeSegmentTab,
+                draft.mode === 'prompt' && styles.modeSegmentTabActive,
+              ]}>
+              <Ionicons
+                name="sparkles"
+                size={14}
+                color={draft.mode === 'prompt' ? '#FFFFFF' : '#94A3B8'}
+              />
+              <Text
+                style={[
+                  styles.modeSegmentText,
+                  draft.mode === 'prompt' && styles.modeSegmentTextActive,
+                ]}>
+                Quick Prompt
               </Text>
-            </View>
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              activeOpacity={0.8}
+              onPress={() => updateDraft({ mode: 'script' })}
+              style={[
+                styles.modeSegmentTab,
+                draft.mode === 'script' && styles.modeSegmentTabActive,
+              ]}>
+              <Ionicons
+                name="document-text-outline"
+                size={14}
+                color={draft.mode === 'script' ? '#FFFFFF' : '#94A3B8'}
+              />
+              <Text
+                style={[
+                  styles.modeSegmentText,
+                  draft.mode === 'script' && styles.modeSegmentTextActive,
+                ]}>
+                Custom Script
+              </Text>
+
+              {user.plan === 'Basic' ? (
+                !user.hasUsedScriptTrial ? (
+                  <View style={styles.trialBadge}>
+                    <Text style={styles.trialBadgeText}>1 FREE TRIAL</Text>
+                  </View>
+                ) : (
+                  <View style={styles.proLockBadge}>
+                    <Ionicons name="lock-closed" size={9} color="#F59E0B" />
+                    <Text style={styles.proLockBadgeText}>PRO</Text>
+                  </View>
+                )
+              ) : (
+                <View style={styles.proUnlockedBadge}>
+                  <Text style={styles.proUnlockedBadgeText}>PRO</Text>
+                </View>
+              )}
+            </TouchableOpacity>
           </View>
 
-          {/* Quick Idea Inspiration Chips */}
-          <View style={styles.inspirationSection}>
-            <Text style={styles.inspirationLabel}>QUICK INSPIRATION</Text>
-            <ScrollView
-              horizontal
-              showsHorizontalScrollIndicator={false}
-              contentContainerStyle={{ gap: 8, paddingVertical: 2 }}>
-              {PROMPT_SUGGESTIONS.map((suggestion, idx) => (
+          {/* 1. HERO CANVAS: Prompt vs Script */}
+          {draft.mode === 'prompt' ? (
+            <View style={styles.canvasCard}>
+              <TextInput
+                style={styles.promptInput}
+                multiline
+                numberOfLines={4}
+                maxLength={500}
+                placeholder="Describe your video in detail... e.g. A cinematic scene of a young African entrepreneur walking through Manchester at sunset, golden hour light..."
+                placeholderTextColor="#64748B"
+                value={draft.prompt}
+                onChangeText={(text) => updateDraft({ prompt: text })}
+              />
+
+              {/* Bottom Bar inside the Canvas */}
+              <View style={styles.canvasFooter}>
                 <TouchableOpacity
-                  key={idx}
-                  activeOpacity={0.7}
-                  onPress={() => handleSelectSamplePrompt(suggestion)}
-                  style={styles.suggestionChip}>
-                  <Ionicons name="flash-outline" size={12} color="#A855F7" />
-                  <Text style={styles.suggestionChipText} numberOfLines={1}>
-                    {suggestion.split(',')[0]}
+                  activeOpacity={0.8}
+                  onPress={handleImproveIdea}
+                  disabled={isImproving}
+                  style={styles.magicEnhanceButton}>
+                  <Ionicons name="sparkles" size={13} color="#C4B5FD" />
+                  <Text style={styles.magicEnhanceText}>
+                    {isImproving ? 'Polishing prompt...' : '✨ Enhance Idea'}
                   </Text>
                 </TouchableOpacity>
-              ))}
-            </ScrollView>
-          </View>
+
+                <Text style={styles.characterCount}>
+                  {draft.prompt.length}/500
+                </Text>
+              </View>
+            </View>
+          ) : (
+            <View style={styles.canvasCard}>
+              <TextInput
+                style={[styles.promptInput, { minHeight: 120 }]}
+                multiline
+                numberOfLines={6}
+                maxLength={2000}
+                placeholder="Paste your screenplay, voiceover narration, or scene script here...&#10;&#10;e.g. In the heart of the savannah, dawn awakens ancient rhythms. A young creator charts a new destiny with light and code..."
+                placeholderTextColor="#64748B"
+                value={draft.customScript || ''}
+                onChangeText={(text) => updateDraft({ customScript: text })}
+              />
+
+              {/* Footer with Word Count & Character Count */}
+              <View style={styles.canvasFooter}>
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                  <Ionicons name="document-text-outline" size={13} color="#A855F7" />
+                  <Text style={styles.magicEnhanceText}>
+                    {(draft.customScript || '').trim().split(/\s+/).filter(Boolean).length} words
+                  </Text>
+                </View>
+
+                <Text style={styles.characterCount}>
+                  {(draft.customScript || '').length}/2000
+                </Text>
+              </View>
+            </View>
+          )}
+
+          {/* Quick Idea Inspiration Chips vs Sample Scripts */}
+          {draft.mode === 'prompt' ? (
+            <View style={styles.inspirationSection}>
+              <Text style={styles.inspirationLabel}>QUICK INSPIRATION</Text>
+              <ScrollView
+                horizontal
+                showsHorizontalScrollIndicator={false}
+                contentContainerStyle={{ gap: 8, paddingVertical: 2 }}>
+                {PROMPT_SUGGESTIONS.map((suggestion, idx) => (
+                  <TouchableOpacity
+                    key={idx}
+                    activeOpacity={0.7}
+                    onPress={() => handleSelectSamplePrompt(suggestion)}
+                    style={styles.suggestionChip}>
+                    <Ionicons name="flash-outline" size={12} color="#A855F7" />
+                    <Text style={styles.suggestionChipText} numberOfLines={1}>
+                      {suggestion.split(',')[0]}
+                    </Text>
+                  </TouchableOpacity>
+                ))}
+              </ScrollView>
+            </View>
+          ) : (
+            <View style={styles.inspirationSection}>
+              <Text style={styles.inspirationLabel}>SAMPLE SCRIPTS</Text>
+              <ScrollView
+                horizontal
+                showsHorizontalScrollIndicator={false}
+                contentContainerStyle={{ gap: 8, paddingVertical: 2 }}>
+                {SAMPLE_SCRIPTS.map((sample, idx) => (
+                  <TouchableOpacity
+                    key={idx}
+                    activeOpacity={0.7}
+                    onPress={() => updateDraft({ customScript: sample.script })}
+                    style={styles.suggestionChip}>
+                    <Ionicons name="copy-outline" size={12} color="#A855F7" />
+                    <Text style={styles.suggestionChipText} numberOfLines={1}>
+                      {sample.title}
+                    </Text>
+                  </TouchableOpacity>
+                ))}
+              </ScrollView>
+            </View>
+          )}
+
+          {/* AUDIO NARRATION PREFERENCE (Visible in Custom Script Mode) */}
+          {draft.mode === 'script' && (
+            <View style={styles.sectionBlock}>
+              <View style={styles.sectionHeaderRow}>
+                <Text style={styles.sectionTitle}>Audio Narration Preference</Text>
+                <Text style={styles.selectedPillTag}>
+                  {draft.narrationMode === 'voiceover' ? 'Word-for-Word' : 'Visual Only'}
+                </Text>
+              </View>
+
+              <View style={styles.narrationCardGroup}>
+                {/* Option 1: Word-for-Word */}
+                <TouchableOpacity
+                  activeOpacity={0.8}
+                  onPress={() => updateDraft({ narrationMode: 'voiceover' })}
+                  style={[
+                    styles.narrationOptionCard,
+                    draft.narrationMode === 'voiceover' && styles.narrationOptionCardSelected,
+                  ]}>
+                  <View style={styles.narrationRadioHeader}>
+                    <View style={styles.narrationIconBadge}>
+                      <Ionicons name="mic" size={18} color="#C084FC" />
+                    </View>
+                    <View style={{ flex: 1 }}>
+                      <Text style={styles.narrationOptionTitle}>Read Script Word-for-Word</Text>
+                      <Text style={styles.narrationOptionBadge}>Voiceover Narration</Text>
+                    </View>
+                    <Ionicons
+                      name={draft.narrationMode === 'voiceover' ? 'radio-button-on' : 'radio-button-off'}
+                      size={20}
+                      color={draft.narrationMode === 'voiceover' ? '#A855F7' : '#475569'}
+                    />
+                  </View>
+                  <Text style={styles.narrationOptionDesc}>
+                    The AI delivers your exact pasted script as a synchronized spoken voiceover across the video beats.
+                  </Text>
+                </TouchableOpacity>
+
+                {/* Option 2: Visual Directing Only */}
+                <TouchableOpacity
+                  activeOpacity={0.8}
+                  onPress={() => updateDraft({ narrationMode: 'visual_only' })}
+                  style={[
+                    styles.narrationOptionCard,
+                    draft.narrationMode === 'visual_only' && styles.narrationOptionCardSelected,
+                  ]}>
+                  <View style={styles.narrationRadioHeader}>
+                    <View style={[styles.narrationIconBadge, { backgroundColor: 'rgba(59, 130, 246, 0.15)' }]}>
+                      <Ionicons name="videocam" size={18} color="#60A5FA" />
+                    </View>
+                    <View style={{ flex: 1 }}>
+                      <Text style={styles.narrationOptionTitle}>Visual Directing Only</Text>
+                      <Text style={[styles.narrationOptionBadge, { color: '#60A5FA' }]}>Instrumental & Sound Design</Text>
+                    </View>
+                    <Ionicons
+                      name={draft.narrationMode === 'visual_only' ? 'radio-button-on' : 'radio-button-off'}
+                      size={20}
+                      color={draft.narrationMode === 'visual_only' ? '#3B82F6' : '#475569'}
+                    />
+                  </View>
+                  <Text style={styles.narrationOptionDesc}>
+                    The script guides camera angles, scene cuts, and action. Audio features cinematic music and effects without spoken dialogue.
+                  </Text>
+                </TouchableOpacity>
+              </View>
+            </View>
+          )}
 
           {/* 2. VISUAL STYLE SELECTOR */}
           <View style={styles.sectionBlock}>
@@ -244,7 +461,7 @@ export default function CreateScreen() {
                   <Ionicons name="mic-outline" size={16} color="#A855F7" />
                   <Text style={styles.settingBlockTitle}>Voice & Narration</Text>
                 </View>
-                
+
                 {draft.voiceStyle !== 'none' && (
                   <TouchableOpacity
                     activeOpacity={0.7}
@@ -445,6 +662,153 @@ export default function CreateScreen() {
                   );
                 })}
               </View>
+            </Pressable>
+          </Pressable>
+        </Modal>
+
+        {/* 1 FREE SCRIPT & NARRATION TRIAL MODAL */}
+        <Modal
+          visible={showTrialModal}
+          transparent
+          animationType="fade"
+          onRequestClose={() => setShowTrialModal(false)}>
+          <Pressable
+            style={styles.modalBackdrop}
+            onPress={() => setShowTrialModal(false)}>
+            <Pressable style={styles.trialModalCard} onPress={(e) => e.stopPropagation()}>
+              <LinearGradient
+                colors={['rgba(139, 92, 246, 0.25)', 'transparent']}
+                style={styles.trialModalGlow}
+              />
+
+              <View style={styles.trialModalIconWrap}>
+                <Ionicons name="sparkles" size={26} color="#A855F7" />
+              </View>
+
+              <Text style={styles.trialModalTitle}>1 Free Script & Narration Trial</Text>
+
+              <Text style={styles.trialModalBody}>
+                You are using your 1 complimentary custom script generation with bespoke audio narration.
+                {'\n\n'}
+                Subsequent custom script videos require a <Text style={{ color: '#C4B5FD', fontWeight: '700' }}>Lazan Pro</Text> subscription.
+              </Text>
+
+              <View style={styles.trialModalFeatureList}>
+                <View style={styles.trialFeatureRow}>
+                  <Ionicons name="checkmark-circle" size={16} color="#10B981" />
+                  <Text style={styles.trialFeatureText}>Cinematic scene breakdown from your script</Text>
+                </View>
+                <View style={styles.trialFeatureRow}>
+                  <Ionicons name="checkmark-circle" size={16} color="#10B981" />
+                  <Text style={styles.trialFeatureText}>
+                    {draft.narrationMode === 'visual_only'
+                      ? 'Visual Directing with ambient score'
+                      : 'Word-for-Word spoken voiceover narration'}
+                  </Text>
+                </View>
+              </View>
+
+              <TouchableOpacity
+                activeOpacity={0.85}
+                onPress={() => {
+                  setShowTrialModal(false);
+                  router.push('/generation');
+                }}
+                style={styles.trialPrimaryBtn}>
+                <LinearGradient
+                  colors={['#6366F1', '#8B5CF6', '#A855F7']}
+                  start={{ x: 0, y: 0 }}
+                  end={{ x: 1, y: 0 }}
+                  style={styles.trialPrimaryGradient}>
+                  <Text style={styles.trialPrimaryBtnText}>Use My 1 Free Trial</Text>
+                  <Ionicons name="arrow-forward" size={16} color="#FFFFFF" />
+                </LinearGradient>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                activeOpacity={0.7}
+                onPress={() => {
+                  setShowTrialModal(false);
+                  router.push('/profile');
+                }}
+                style={styles.trialSecondaryBtn}>
+                <Text style={styles.trialSecondaryBtnText}>Unlock Unlimited Pro</Text>
+              </TouchableOpacity>
+            </Pressable>
+          </Pressable>
+        </Modal>
+
+        {/* PRO EXCLUSIVE UPGRADE MODAL */}
+        <Modal
+          visible={showProModal}
+          transparent
+          animationType="fade"
+          onRequestClose={() => setShowProModal(false)}>
+          <Pressable
+            style={styles.modalBackdrop}
+            onPress={() => setShowProModal(false)}>
+            <Pressable style={styles.trialModalCard} onPress={(e) => e.stopPropagation()}>
+              <LinearGradient
+                colors={['rgba(245, 158, 11, 0.2)', 'transparent']}
+                style={styles.trialModalGlow}
+              />
+
+              <View
+                style={[
+                  styles.trialModalIconWrap,
+                  {
+                    backgroundColor: 'rgba(245, 158, 11, 0.15)',
+                    borderColor: 'rgba(245, 158, 11, 0.4)',
+                  },
+                ]}>
+                <Ionicons name="lock-closed" size={24} color="#FBBF24" />
+              </View>
+
+              <Text style={styles.trialModalTitle}>Unlock Custom Script Mode</Text>
+
+              <Text style={styles.trialModalBody}>
+                You have used your 1 free script trial. Upgrade to{' '}
+                <Text style={{ color: '#FBBF24', fontWeight: '700' }}>Lazan Pro</Text> to paste unlimited custom scripts and voiceovers.
+              </Text>
+
+              <View style={styles.trialModalFeatureList}>
+                <View style={styles.trialFeatureRow}>
+                  <Ionicons name="flash" size={15} color="#FBBF24" />
+                  <Text style={styles.trialFeatureText}>Unlimited Custom Scripts & Screenplays</Text>
+                </View>
+                <View style={styles.trialFeatureRow}>
+                  <Ionicons name="mic" size={15} color="#FBBF24" />
+                  <Text style={styles.trialFeatureText}>Word-for-Word Voiceover & Audio Sync</Text>
+                </View>
+                <View style={styles.trialFeatureRow}>
+                  <Ionicons name="videocam" size={15} color="#FBBF24" />
+                  <Text style={styles.trialFeatureText}>1080p FHD Priority Neural Diffusion</Text>
+                </View>
+              </View>
+
+              <TouchableOpacity
+                activeOpacity={0.85}
+                onPress={() => {
+                  setShowProModal(false);
+                  router.push('/profile');
+                }}
+                style={styles.trialPrimaryBtn}>
+                <LinearGradient
+                  colors={['#D97706', '#F59E0B', '#FBBF24']}
+                  start={{ x: 0, y: 0 }}
+                  end={{ x: 1, y: 0 }}
+                  style={styles.trialPrimaryGradient}>
+                  <Text style={styles.trialPrimaryBtnText}>Upgrade to Pro</Text>
+                  <Ionicons name="arrow-forward" size={16} color="#FFFFFF" />
+                </LinearGradient>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                activeOpacity={0.7}
+                onPress={() => setShowProModal(false)}
+                style={styles.trialSecondaryBtn}>
+                <Text style={styles.trialSecondaryBtnText}>Maybe Later</Text>
+              </TouchableOpacity>
             </Pressable>
           </Pressable>
         </Modal>
@@ -845,5 +1209,221 @@ const styles = StyleSheet.create({
   modalLangSample: {
     fontSize: 11,
     color: '#64748B',
+  },
+  // MODE SELECTOR
+  modeSegmentContainer: {
+    flexDirection: 'row',
+    backgroundColor: '#0F121E',
+    borderRadius: BorderRadius.full,
+    padding: 4,
+    borderWidth: 1,
+    borderColor: '#20263A',
+    gap: 4,
+  },
+  modeSegmentTab: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    paddingVertical: 10,
+    borderRadius: BorderRadius.full,
+  },
+  modeSegmentTabActive: {
+    backgroundColor: '#1E1B4B',
+    borderWidth: 1,
+    borderColor: '#8B5CF6',
+  },
+  modeSegmentText: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: '#94A3B8',
+  },
+  modeSegmentTextActive: {
+    color: '#FFFFFF',
+    fontWeight: '800',
+  },
+  trialBadge: {
+    backgroundColor: 'rgba(16, 185, 129, 0.18)',
+    borderWidth: 1,
+    borderColor: '#10B981',
+    borderRadius: 8,
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+  },
+  trialBadgeText: {
+    fontSize: 9,
+    fontWeight: '800',
+    color: '#34D399',
+    letterSpacing: 0.5,
+  },
+  proLockBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 3,
+    backgroundColor: 'rgba(245, 158, 11, 0.18)',
+    borderWidth: 1,
+    borderColor: '#F59E0B',
+    borderRadius: 8,
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+  },
+  proLockBadgeText: {
+    fontSize: 9,
+    fontWeight: '800',
+    color: '#FBBF24',
+    letterSpacing: 0.5,
+  },
+  proUnlockedBadge: {
+    backgroundColor: 'rgba(139, 92, 246, 0.25)',
+    borderWidth: 1,
+    borderColor: '#8B5CF6',
+    borderRadius: 8,
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+  },
+  proUnlockedBadgeText: {
+    fontSize: 9,
+    fontWeight: '800',
+    color: '#C4B5FD',
+    letterSpacing: 0.5,
+  },
+  // NARRATION CARD GROUP
+  narrationCardGroup: {
+    gap: 10,
+  },
+  narrationOptionCard: {
+    backgroundColor: '#0D0F18',
+    borderRadius: BorderRadius.lg,
+    borderWidth: 1.5,
+    borderColor: '#20263A',
+    padding: 14,
+    gap: 8,
+  },
+  narrationOptionCardSelected: {
+    borderColor: '#8B5CF6',
+    backgroundColor: '#15132B',
+  },
+  narrationRadioHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+  },
+  narrationIconBadge: {
+    width: 34,
+    height: 34,
+    borderRadius: 10,
+    backgroundColor: 'rgba(139, 92, 246, 0.15)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  narrationOptionTitle: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: '#FFFFFF',
+  },
+  narrationOptionBadge: {
+    fontSize: 11,
+    fontWeight: '600',
+    color: '#C084FC',
+    marginTop: 1,
+  },
+  narrationOptionDesc: {
+    fontSize: 12,
+    color: '#94A3B8',
+    lineHeight: 17,
+  },
+  // TRIAL & PRO MODALS
+  trialModalCard: {
+    width: '100%',
+    maxWidth: 380,
+    backgroundColor: '#101322',
+    borderRadius: BorderRadius.xxl,
+    borderWidth: 1.5,
+    borderColor: '#2A3452',
+    padding: 24,
+    alignItems: 'center',
+    overflow: 'hidden',
+    ...Shadows.card,
+  },
+  trialModalGlow: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    height: 120,
+  },
+  trialModalIconWrap: {
+    width: 58,
+    height: 58,
+    borderRadius: 29,
+    backgroundColor: 'rgba(139, 92, 246, 0.18)',
+    borderWidth: 1.5,
+    borderColor: 'rgba(139, 92, 246, 0.5)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 16,
+  },
+  trialModalTitle: {
+    fontSize: 18,
+    fontWeight: '800',
+    color: '#FFFFFF',
+    textAlign: 'center',
+    marginBottom: 10,
+  },
+  trialModalBody: {
+    fontSize: 13,
+    color: '#94A3B8',
+    textAlign: 'center',
+    lineHeight: 20,
+    marginBottom: 18,
+  },
+  trialModalFeatureList: {
+    width: '100%',
+    backgroundColor: '#090B14',
+    borderRadius: BorderRadius.lg,
+    padding: 12,
+    gap: 8,
+    marginBottom: 20,
+    borderWidth: 1,
+    borderColor: '#1E253A',
+  },
+  trialFeatureRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  trialFeatureText: {
+    fontSize: 12,
+    color: '#CBD5E1',
+    fontWeight: '500',
+    flex: 1,
+  },
+  trialPrimaryBtn: {
+    width: '100%',
+    borderRadius: BorderRadius.xl,
+    overflow: 'hidden',
+    marginBottom: 10,
+  },
+  trialPrimaryGradient: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    paddingVertical: 14,
+  },
+  trialPrimaryBtnText: {
+    fontSize: 15,
+    fontWeight: '700',
+    color: '#FFFFFF',
+  },
+  trialSecondaryBtn: {
+    paddingVertical: 10,
+    paddingHorizontal: 16,
+  },
+  trialSecondaryBtnText: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: '#94A3B8',
   },
 });
