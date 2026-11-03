@@ -1,3 +1,10 @@
+export interface BrandAsset {
+  id: string;
+  uri: string;
+  name: string;
+  type: 'logo' | 'flyer' | 'reference';
+}
+
 export interface VideoItem {
   id: string;
   title: string;
@@ -21,6 +28,8 @@ export interface VideoItem {
   failureReason?: string;
   synopsis?: string;
   narrationScript?: string;
+  brandAssets?: BrandAsset[];
+  watermarkLogo?: boolean;
   scenes?: {
     sceneNumber: number;
     timestamp?: string;

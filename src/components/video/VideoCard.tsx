@@ -119,6 +119,13 @@ export const VideoCard: React.FC<VideoCardProps> = ({
             {video.status === 'completed' ? 'Ready' : video.status === 'processing' ? 'Generating' : 'Failed'}
           </Text>
         </View>
+
+        {/* Aspect Ratio Pill */}
+        {video.aspectRatio ? (
+          <View style={styles.ratioPill}>
+            <Text style={styles.ratioPillText}>{video.aspectRatio}</Text>
+          </View>
+        ) : null}
       </View>
 
       <View style={styles.gridBody}>
@@ -212,6 +219,22 @@ const styles = StyleSheet.create({
     paddingHorizontal: 7,
     paddingVertical: 2,
     borderRadius: 6,
+  },
+  ratioPill: {
+    position: 'absolute',
+    top: 8,
+    right: 8,
+    backgroundColor: 'rgba(9, 10, 15, 0.85)',
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 6,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.2)',
+  },
+  ratioPillText: {
+    color: '#FFFFFF',
+    fontSize: 9,
+    fontWeight: '800',
   },
   gridBody: {
     padding: 12,

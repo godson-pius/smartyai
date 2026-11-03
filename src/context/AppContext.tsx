@@ -1,10 +1,10 @@
 import { auth } from '@/config/firebase';
 import { CREDIT_PACKAGES } from '@/data/creditPackages';
-import { INITIAL_VIDEOS, VideoItem } from '@/data/mockVideos';
+import { BrandAsset, INITIAL_VIDEOS, VideoItem } from '@/data/mockVideos';
 import { DURATION_OPTIONS, PlanTier, SUBSCRIPTION_PLANS } from '@/data/plans';
 import { VIDEO_STYLES } from '@/data/styles';
 import { VOICE_LANGUAGES } from '@/data/voices';
-import { generateAIVideo } from '@/services/videoGeneration';
+import { generateAIVideo, generateSequentialScenes } from '@/services/videoGeneration';
 import { getFirebaseErrorMessage } from '@/utils/firebaseErrors';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import {
@@ -66,6 +66,8 @@ export interface GenerationDraft {
   mood: string;
   backgroundMusic: boolean;
   soundEffects: boolean;
+  assets?: BrandAsset[];
+  watermarkLogo?: boolean;
 }
 
 export interface GenerationStage {
@@ -129,7 +131,7 @@ const defaultDraft: GenerationDraft = {
   customScript: '',
   narrationMode: 'voiceover',
   styleId: 'cinematic',
-  durationId: '1m',
+  durationId: '10s',
   voiceGender: 'female',
   voiceStyle: 'narration',
   languageId: 'en-af',
@@ -138,6 +140,8 @@ const defaultDraft: GenerationDraft = {
   mood: 'inspiring',
   backgroundMusic: true,
   soundEffects: true,
+  assets: [],
+  watermarkLogo: true,
 };
 
 const defaultGenerationState: ActiveGenerationState = {
@@ -577,16 +581,8 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   };
 
   const canPlanAccessDuration = (durationId: string): boolean => {
-    const planHierarchy: Record<PlanTier, number> = {
-      Basic: 1,
-      Pro: 2,
-      Premium: 3,
-    };
-
-    const option = DURATION_OPTIONS.find((d) => d.id === durationId);
-    if (!option) return false;
-
-    return planHierarchy[user.plan] >= planHierarchy[option.minPlan];
+    // Fully unlocked for all durations (20s, 1m, 2m) so creators can test and produce any length
+    return true;
   };
 
   const cancelGeneration = () => {
@@ -633,8 +629,8 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     const newVideoId = `vid-${Date.now()}`;
     const selectedStyle = VIDEO_STYLES.find((s) => s.id === draft.styleId)?.name || 'Cinematic';
     const selectedDuration = DURATION_OPTIONS.find((d) => d.id === draft.durationId);
-    const durationLabel = selectedDuration ? selectedDuration.label : '1 min';
-    const durationSeconds = selectedDuration ? selectedDuration.seconds : 60;
+    const durationLabel = selectedDuration ? selectedDuration.label : '10 sec';
+    const durationSeconds = selectedDuration ? selectedDuration.seconds : 10;
     const languageObj = VOICE_LANGUAGES.find((l) => l.id === draft.languageId);
 
     // Initial state (Stage 0: 15%)
@@ -694,11 +690,13 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       customScript: draft.customScript,
       narrationMode: draft.narrationMode,
       style: selectedStyle,
-      aspectRatio: draft.aspectRatio === '9:16' ? '9:16' : '16:9',
+      aspectRatio: draft.aspectRatio,
       durationSeconds,
       resolution: user.plan === 'Basic' ? '720p' : '1080p',
       mood: draft.mood,
       cameraStyle: draft.cameraStyle,
+      assets: draft.assets,
+      watermarkLogo: draft.watermarkLogo,
     });
 
     const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -790,7 +788,12 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     if (isCancelledRef.current) throw new Error('Cancelled');
 
     const styleImages = THUMBNAILS_BY_STYLE[draft.styleId] || THUMBNAILS_BY_STYLE.cinematic;
-    const thumbnail = styleImages[Math.floor(Math.random() * styleImages.length)];
+    const baseThumbnail = styleImages[Math.floor(Math.random() * styleImages.length)];
+    const thumbnail = draft.aspectRatio === '9:16'
+      ? `${baseThumbnail}&ar=9:16`
+      : draft.aspectRatio === '1:1'
+      ? `${baseThumbnail}&ar=1:1`
+      : baseThumbnail;
 
     const STYLE_SAMPLE_VIDEOS: Record<string, string> = {
       cinematic: 'https://test-videos.co.uk/vids/sintel/mp4/h264/1080/Sintel_1080_10s_5MB.mp4',
@@ -809,7 +812,18 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     const narrationScript = draft.narrationMode === 'visual_only'
       ? undefined
       : (isScriptMode && draft.customScript?.trim() ? draft.customScript.trim() : aiResult?.narrationScript);
-    const scenes = aiResult?.scenes;
+    const scenes = (aiResult?.scenes && aiResult.scenes.length >= 2)
+      ? aiResult.scenes
+      : generateSequentialScenes(
+          draft.customScript || '',
+          draft.prompt,
+          isScriptMode,
+          durationSeconds,
+          durationSeconds >= 15 ? 3 : durationSeconds >= 10 ? 2 : 1,
+          selectedStyle,
+          draft.cameraStyle,
+          draft.narrationMode === 'visual_only'
+        );
 
     const newVideo: VideoItem = {
       id: newVideoId,
@@ -818,6 +832,8 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       synopsis,
       narrationScript,
       scenes,
+      brandAssets: draft.assets,
+      watermarkLogo: draft.watermarkLogo,
       duration: durationLabel,
       durationSeconds,
       date: 'Just now',

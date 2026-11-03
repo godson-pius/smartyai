@@ -21,15 +21,17 @@ if (Platform.OS === 'android' && UIManager.setLayoutAnimationEnabledExperimental
 
 interface AdvancedOptionsProps {
   selectedCamera: string;
-  selectedAspectRatio: string;
+  selectedAspectRatio?: string;
   selectedMood: string;
   musicEnabled: boolean;
   soundEffectsEnabled: boolean;
   onSelectCamera: (camera: string) => void;
-  onSelectAspectRatio: (ratio: string) => void;
+  onSelectAspectRatio?: (ratio: string) => void;
   onSelectMood: (mood: string) => void;
   onToggleMusic: (val: boolean) => void;
   onToggleSoundEffects: (val: boolean) => void;
+  showAspectRatio?: boolean;
+  defaultExpanded?: boolean;
   style?: ViewStyle;
 }
 
@@ -44,9 +46,11 @@ export const AdvancedOptions: React.FC<AdvancedOptionsProps> = ({
   onSelectMood,
   onToggleMusic,
   onToggleSoundEffects,
+  showAspectRatio = false,
+  defaultExpanded = false,
   style,
 }) => {
-  const [isExpanded, setIsExpanded] = useState(false);
+  const [isExpanded, setIsExpanded] = useState(defaultExpanded);
 
   const toggleExpand = () => {
     LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
@@ -62,12 +66,12 @@ export const AdvancedOptions: React.FC<AdvancedOptionsProps> = ({
         style={styles.headerButton}>
         <View style={styles.headerLeft}>
           <View style={styles.iconCircle}>
-            <Ionicons name="options-outline" size={18} color="#A855F7" />
+            <Ionicons name="videocam-outline" size={18} color="#A855F7" />
           </View>
           <View>
-            <Text style={styles.headerTitle}>Advanced Director Controls</Text>
+            <Text style={styles.headerTitle}>Camera Movement & Soundtrack</Text>
             <Text style={styles.headerSubtitle}>
-              Camera angles, framing, mood & sound
+              Angles, motion, lighting mood & spatial audio
             </Text>
           </View>
         </View>
@@ -81,37 +85,41 @@ export const AdvancedOptions: React.FC<AdvancedOptionsProps> = ({
 
       {isExpanded && (
         <View style={styles.contentBody}>
-          {/* Aspect Ratio */}
-          <Text style={styles.subLabel}>ASPECT RATIO</Text>
-          <View style={styles.aspectGrid}>
-            {ASPECT_RATIOS.map((item) => {
-              const isSelected = selectedAspectRatio === item.ratio;
-              return (
-                <Pressable
-                  key={item.id}
-                  onPress={() => onSelectAspectRatio(item.ratio)}
-                  style={({ pressed }) => [
-                    styles.aspectCard,
-                    isSelected && styles.aspectCardSelected,
-                    pressed && { opacity: 0.9 },
-                  ]}>
-                  <Ionicons
-                    name={item.icon as keyof typeof Ionicons.glyphMap}
-                    size={20}
-                    color={isSelected ? '#A855F7' : Colors.textMuted}
-                  />
-                  <Text
-                    style={[
-                      styles.aspectLabel,
-                      isSelected && styles.aspectLabelSelected,
-                    ]}>
-                    {item.label}
-                  </Text>
-                  <Text style={styles.aspectSublabel}>{item.sublabel}</Text>
-                </Pressable>
-              );
-            })}
-          </View>
+          {/* Aspect Ratio (Only if requested) */}
+          {showAspectRatio && onSelectAspectRatio && selectedAspectRatio && (
+            <>
+              <Text style={styles.subLabel}>ASPECT RATIO</Text>
+              <View style={styles.aspectGrid}>
+                {ASPECT_RATIOS.map((item) => {
+                  const isSelected = selectedAspectRatio === item.ratio;
+                  return (
+                    <Pressable
+                      key={item.id}
+                      onPress={() => onSelectAspectRatio(item.ratio)}
+                      style={({ pressed }) => [
+                        styles.aspectCard,
+                        isSelected && styles.aspectCardSelected,
+                        pressed && { opacity: 0.9 },
+                      ]}>
+                      <Ionicons
+                        name={item.icon as keyof typeof Ionicons.glyphMap}
+                        size={20}
+                        color={isSelected ? '#A855F7' : Colors.textMuted}
+                      />
+                      <Text
+                        style={[
+                          styles.aspectLabel,
+                          isSelected && styles.aspectLabelSelected,
+                        ]}>
+                        {item.label}
+                      </Text>
+                      <Text style={styles.aspectSublabel}>{item.sublabel}</Text>
+                    </Pressable>
+                  );
+                })}
+              </View>
+            </>
+          )}
 
           {/* Camera Styles */}
           <Text style={[styles.subLabel, { marginTop: 16 }]}>CAMERA MOVEMENT</Text>

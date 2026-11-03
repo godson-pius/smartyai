@@ -1,11 +1,13 @@
 import { CreditBalance } from '@/components/common/CreditBalance';
 import { Header } from '@/components/common/Header';
 import { AdvancedOptions } from '@/components/create/AdvancedOptions';
+import { BrandAssetsPicker } from '@/components/create/BrandAssetsPicker';
 import { DurationSelector } from '@/components/create/DurationSelector';
 import { StyleSelector } from '@/components/create/StyleSelector';
 import { BorderRadius, Colors, Shadows, Spacing } from '@/constants/theme';
 import { useApp } from '@/context/AppContext';
 import { ASPECT_RATIOS, PROMPT_SUGGESTIONS } from '@/data/advancedOptions';
+import { BrandAsset } from '@/data/mockVideos';
 import { DURATION_OPTIONS } from '@/data/plans';
 import { VIDEO_STYLES } from '@/data/styles';
 import { VOICE_LANGUAGES, VOICE_STYLES, VoiceGender } from '@/data/voices';
@@ -16,6 +18,7 @@ import { useState } from 'react';
 import {
   Alert,
   KeyboardAvoidingView,
+  LayoutAnimation,
   Modal,
   Platform,
   Pressable,
@@ -24,9 +27,14 @@ import {
   Text,
   TextInput,
   TouchableOpacity,
+  UIManager,
   View,
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
+
+if (Platform.OS === 'android' && UIManager.setLayoutAnimationEnabledExperimental) {
+  UIManager.setLayoutAnimationEnabledExperimental(true);
+}
 
 const SAMPLE_SCRIPTS = [
   {
@@ -59,6 +67,7 @@ export default function CreateScreen() {
   const [showVoiceModal, setShowVoiceModal] = useState(false);
   const [showTrialModal, setShowTrialModal] = useState(false);
   const [showProModal, setShowProModal] = useState(false);
+  const [isCustomizing, setIsCustomizing] = useState(() => (draft.assets && draft.assets.length > 0) || false);
 
   const selectedStyle = VIDEO_STYLES.find((s) => s.id === draft.styleId) || VIDEO_STYLES[0];
   const selectedDuration = DURATION_OPTIONS.find((d) => d.id === draft.durationId) || DURATION_OPTIONS[1];
@@ -83,6 +92,27 @@ export default function CreateScreen() {
 
   const handleSelectSamplePrompt = (sample: string) => {
     updateDraft({ prompt: sample });
+  };
+
+  const handleAddAsset = (newAsset: BrandAsset) => {
+    const current = draft.assets || [];
+    updateDraft({ assets: [...current, newAsset] });
+  };
+
+  const handleRemoveAsset = (id: string) => {
+    const current = draft.assets || [];
+    updateDraft({ assets: current.filter((a) => a.id !== id) });
+  };
+
+  const handleUpdateAssetType = (id: string, type: BrandAsset['type']) => {
+    const current = draft.assets || [];
+    updateDraft({
+      assets: current.map((a) => (a.id === id ? { ...a, type } : a)),
+    });
+  };
+
+  const handleToggleWatermark = (val: boolean) => {
+    updateDraft({ watermarkLogo: val });
   };
 
   const handleGenerate = () => {
@@ -247,7 +277,7 @@ export default function CreateScreen() {
                 style={[styles.promptInput, { minHeight: 120 }]}
                 multiline
                 numberOfLines={6}
-                maxLength={2000}
+                maxLength={4000}
                 placeholder="Paste your screenplay, voiceover narration, or scene script here...&#10;&#10;e.g. In the heart of the savannah, dawn awakens ancient rhythms. A young creator charts a new destiny with light and code..."
                 placeholderTextColor="#64748B"
                 value={draft.customScript || ''}
@@ -264,7 +294,7 @@ export default function CreateScreen() {
                 </View>
 
                 <Text style={styles.characterCount}>
-                  {(draft.customScript || '').length}/2000
+                  {(draft.customScript || '').length}/4000
                 </Text>
               </View>
             </View>
@@ -315,111 +345,14 @@ export default function CreateScreen() {
             </View>
           )}
 
-          {/* AUDIO NARRATION PREFERENCE (Visible in Custom Script Mode) */}
-          {draft.mode === 'script' && (
-            <View style={styles.sectionBlock}>
-              <View style={styles.sectionHeaderRow}>
-                <Text style={styles.sectionTitle}>Audio Narration Preference</Text>
-                <Text style={styles.selectedPillTag}>
-                  {draft.narrationMode === 'voiceover' ? 'Word-for-Word' : 'Visual Only'}
-                </Text>
-              </View>
-
-              <View style={styles.narrationCardGroup}>
-                {/* Option 1: Word-for-Word */}
-                <TouchableOpacity
-                  activeOpacity={0.8}
-                  onPress={() => updateDraft({ narrationMode: 'voiceover' })}
-                  style={[
-                    styles.narrationOptionCard,
-                    draft.narrationMode === 'voiceover' && styles.narrationOptionCardSelected,
-                  ]}>
-                  <View style={styles.narrationRadioHeader}>
-                    <View style={styles.narrationIconBadge}>
-                      <Ionicons name="mic" size={18} color="#C084FC" />
-                    </View>
-                    <View style={{ flex: 1 }}>
-                      <Text style={styles.narrationOptionTitle}>Read Script Word-for-Word</Text>
-                      <Text style={styles.narrationOptionBadge}>Voiceover Narration</Text>
-                    </View>
-                    <Ionicons
-                      name={draft.narrationMode === 'voiceover' ? 'radio-button-on' : 'radio-button-off'}
-                      size={20}
-                      color={draft.narrationMode === 'voiceover' ? '#A855F7' : '#475569'}
-                    />
-                  </View>
-                  <Text style={styles.narrationOptionDesc}>
-                    The AI delivers your exact pasted script as a synchronized spoken voiceover across the video beats.
-                  </Text>
-                </TouchableOpacity>
-
-                {/* Option 2: Visual Directing Only */}
-                <TouchableOpacity
-                  activeOpacity={0.8}
-                  onPress={() => updateDraft({ narrationMode: 'visual_only' })}
-                  style={[
-                    styles.narrationOptionCard,
-                    draft.narrationMode === 'visual_only' && styles.narrationOptionCardSelected,
-                  ]}>
-                  <View style={styles.narrationRadioHeader}>
-                    <View style={[styles.narrationIconBadge, { backgroundColor: 'rgba(59, 130, 246, 0.15)' }]}>
-                      <Ionicons name="videocam" size={18} color="#60A5FA" />
-                    </View>
-                    <View style={{ flex: 1 }}>
-                      <Text style={styles.narrationOptionTitle}>Visual Directing Only</Text>
-                      <Text style={[styles.narrationOptionBadge, { color: '#60A5FA' }]}>Instrumental & Sound Design</Text>
-                    </View>
-                    <Ionicons
-                      name={draft.narrationMode === 'visual_only' ? 'radio-button-on' : 'radio-button-off'}
-                      size={20}
-                      color={draft.narrationMode === 'visual_only' ? '#3B82F6' : '#475569'}
-                    />
-                  </View>
-                  <Text style={styles.narrationOptionDesc}>
-                    The script guides camera angles, scene cuts, and action. Audio features cinematic music and effects without spoken dialogue.
-                  </Text>
-                </TouchableOpacity>
-              </View>
-            </View>
-          )}
-
-          {/* 2. VISUAL STYLE SELECTOR */}
-          <View style={styles.sectionBlock}>
-            <View style={styles.sectionHeaderRow}>
-              <Text style={styles.sectionTitle}>Visual Style</Text>
-              <Text style={styles.selectedPillTag}>{selectedStyle.name}</Text>
-            </View>
-            <StyleSelector
-              selectedStyleId={draft.styleId}
-              onSelectStyle={(styleId) => updateDraft({ styleId })}
-            />
-          </View>
-
-          {/* 3. FORMAT & AUDIO SETTINGS CARD */}
+          {/* ZONE 2: VIDEO ESSENTIALS (Compact card for instant decisions) */}
           <View style={styles.settingsGroupCard}>
-            {/* Duration Segment */}
+            {/* Format / Aspect Ratio */}
             <View style={styles.settingItemBlock}>
               <View style={styles.settingHeaderRow}>
                 <View style={styles.settingTitleRow}>
-                  <Ionicons name="timer-outline" size={16} color="#A855F7" />
-                  <Text style={styles.settingBlockTitle}>Video Duration</Text>
-                </View>
-                <Text style={styles.settingCurrentValue}>{selectedDuration.label}</Text>
-              </View>
-
-              <DurationSelector
-                selectedDurationId={draft.durationId}
-                onSelectDuration={(durationId) => updateDraft({ durationId })}
-                canAccessDuration={canPlanAccessDuration}
-              />
-            </View>
-
-            {/* Aspect Ratio Segment */}
-            <View style={[styles.settingItemBlock, styles.borderTopBlock]}>
-              <View style={styles.settingHeaderRow}>
-                <View style={styles.settingTitleRow}>
-                  <Ionicons name="crop-outline" size={16} color="#A855F7" />
-                  <Text style={styles.settingBlockTitle}>Aspect Ratio</Text>
+                  <Ionicons name="phone-portrait-outline" size={16} color="#A855F7" />
+                  <Text style={styles.settingBlockTitle}>Platform & Format</Text>
                 </View>
                 <Text style={styles.settingCurrentValue}>{draft.aspectRatio}</Text>
               </View>
@@ -441,85 +374,283 @@ export default function CreateScreen() {
                         size={16}
                         color={isSelected ? '#FFFFFF' : '#64748B'}
                       />
-                      <Text
-                        style={[
-                          styles.aspectButtonText,
-                          isSelected && styles.aspectButtonTextSelected,
-                        ]}>
-                        {item.ratio}
-                      </Text>
+                      <View style={{ alignItems: 'center' }}>
+                        <Text
+                          style={[
+                            styles.aspectButtonText,
+                            isSelected && styles.aspectButtonTextSelected,
+                          ]}>
+                          {item.ratio}
+                        </Text>
+                        <Text
+                          style={[
+                            styles.aspectButtonSub,
+                            isSelected && styles.aspectButtonSubSelected,
+                          ]}>
+                          {item.ratio === '9:16'
+                            ? 'Reels / TikTok'
+                            : item.ratio === '16:9'
+                            ? 'YouTube / Web'
+                            : 'Square / Post'}
+                        </Text>
+                      </View>
                     </TouchableOpacity>
                   );
                 })}
               </View>
             </View>
 
-            {/* Voice & Narration Quick Row */}
+            {/* Video Duration */}
             <View style={[styles.settingItemBlock, styles.borderTopBlock]}>
               <View style={styles.settingHeaderRow}>
                 <View style={styles.settingTitleRow}>
-                  <Ionicons name="mic-outline" size={16} color="#A855F7" />
-                  <Text style={styles.settingBlockTitle}>Voice & Narration</Text>
+                  <Ionicons name="timer-outline" size={16} color="#A855F7" />
+                  <Text style={styles.settingBlockTitle}>Video Duration</Text>
                 </View>
-
-                {draft.voiceStyle !== 'none' && (
-                  <TouchableOpacity
-                    activeOpacity={0.7}
-                    onPress={() => setShowVoiceModal(true)}
-                    style={styles.voiceCustomizerPill}>
-                    <Text style={styles.voiceCustomizerText}>
-                      {draft.voiceGender === 'female' ? 'Female' : 'Male'} ({selectedLang.name.split(' ')[0]}) ▾
-                    </Text>
-                  </TouchableOpacity>
-                )}
+                <Text style={styles.settingCurrentValue}>{selectedDuration.label}</Text>
               </View>
 
-              {/* Delivery mode pills */}
-              <View style={styles.voiceDeliveryRow}>
-                {VOICE_STYLES.map((vStyle) => {
-                  const isSelected = draft.voiceStyle === vStyle.id;
-                  return (
-                    <TouchableOpacity
-                      key={vStyle.id}
-                      activeOpacity={0.8}
-                      onPress={() => updateDraft({ voiceStyle: vStyle.id })}
-                      style={[
-                        styles.voicePill,
-                        isSelected && styles.voicePillSelected,
-                      ]}>
-                      <Ionicons
-                        name={vStyle.icon as keyof typeof Ionicons.glyphMap}
-                        size={14}
-                        color={isSelected ? '#FFFFFF' : '#64748B'}
-                      />
-                      <Text
-                        style={[
-                          styles.voicePillText,
-                          isSelected && styles.voicePillTextSelected,
-                        ]}>
-                        {vStyle.name === 'Character Dialogue' ? 'Dialogue' : vStyle.name}
-                      </Text>
-                    </TouchableOpacity>
-                  );
-                })}
-              </View>
+              <DurationSelector
+                selectedDurationId={draft.durationId}
+                onSelectDuration={(durationId) => updateDraft({ durationId })}
+                canAccessDuration={canPlanAccessDuration}
+              />
             </View>
           </View>
 
-          {/* 4. OPTIONAL ADVANCED DIRECTOR CONTROLS */}
+          {/* VISUAL STYLE SELECTOR */}
           <View style={styles.sectionBlock}>
-            <AdvancedOptions
-              selectedCamera={draft.cameraStyle}
-              selectedAspectRatio={draft.aspectRatio}
-              selectedMood={draft.mood}
-              musicEnabled={draft.backgroundMusic}
-              soundEffectsEnabled={draft.soundEffects}
-              onSelectCamera={(cameraStyle) => updateDraft({ cameraStyle })}
-              onSelectAspectRatio={(aspectRatio) => updateDraft({ aspectRatio })}
-              onSelectMood={(mood) => updateDraft({ mood })}
-              onToggleMusic={(backgroundMusic) => updateDraft({ backgroundMusic })}
-              onToggleSoundEffects={(soundEffects) => updateDraft({ soundEffects })}
+            <View style={styles.sectionHeaderRow}>
+              <Text style={styles.sectionTitle}>Visual Style</Text>
+              <Text style={styles.selectedPillTag}>{selectedStyle.name}</Text>
+            </View>
+            <StyleSelector
+              selectedStyleId={draft.styleId}
+              onSelectStyle={(styleId) => updateDraft({ styleId })}
             />
+          </View>
+
+          {/* ZONE 3: BRAND & FINE-TUNE OPTIONS (OPTIONAL ACCORDION) */}
+          <View style={styles.customizerSection}>
+            <TouchableOpacity
+              activeOpacity={0.8}
+              onPress={() => {
+                LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
+                setIsCustomizing((prev) => !prev);
+              }}
+              style={[
+                styles.customizerTriggerCard,
+                isCustomizing && styles.customizerTriggerCardOpen,
+              ]}>
+              <View style={styles.customizerHeaderRow}>
+                <View style={styles.customizerIconCircle}>
+                  <Ionicons name="options-outline" size={18} color="#C084FC" />
+                </View>
+                <View style={{ flex: 1 }}>
+                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                    <Text style={styles.customizerTitle}>Brand & Fine-Tune Options</Text>
+                    <View style={styles.optionalBadge}>
+                      <Text style={styles.optionalBadgeText}>OPTIONAL</Text>
+                    </View>
+                  </View>
+                  <Text style={styles.customizerSubtitle}>
+                    Add firm logo, event flyer, custom voice & camera
+                  </Text>
+                </View>
+                <Ionicons
+                  name={isCustomizing ? 'chevron-up' : 'chevron-down'}
+                  size={20}
+                  color="#94A3B8"
+                />
+              </View>
+
+              {/* Status Badges Row */}
+              <View style={styles.customizerBadgesRow}>
+                <View
+                  style={[
+                    styles.customizerBadge,
+                    Boolean(draft.assets?.length) && styles.customizerBadgeActive,
+                  ]}>
+                  <Ionicons
+                    name="business-outline"
+                    size={12}
+                    color={draft.assets?.length ? '#C084FC' : '#64748B'}
+                  />
+                  <Text
+                    style={[
+                      styles.customizerBadgeText,
+                      Boolean(draft.assets?.length) && styles.customizerBadgeTextActive,
+                    ]}>
+                    {draft.assets && draft.assets.length > 0
+                      ? `${draft.assets.length} Logo/Flyer`
+                      : 'No Brand Asset'}
+                  </Text>
+                </View>
+
+                <View
+                  style={[
+                    styles.customizerBadge,
+                    draft.voiceStyle !== 'none' && styles.customizerBadgeActive,
+                  ]}>
+                  <Ionicons
+                    name="mic-outline"
+                    size={12}
+                    color={draft.voiceStyle !== 'none' ? '#C084FC' : '#64748B'}
+                  />
+                  <Text
+                    style={[
+                      styles.customizerBadgeText,
+                      draft.voiceStyle !== 'none' && styles.customizerBadgeTextActive,
+                    ]}>
+                    {draft.voiceStyle === 'none' ? 'Muted' : 'AI Voice'}
+                  </Text>
+                </View>
+
+                <View style={styles.customizerBadge}>
+                  <Ionicons name="videocam-outline" size={12} color="#64748B" />
+                  <Text style={styles.customizerBadgeText}>{draft.cameraStyle}</Text>
+                </View>
+              </View>
+            </TouchableOpacity>
+
+            {/* EXPANDED CONTENT (When opened) */}
+            {isCustomizing && (
+              <View style={styles.expandedDrawerBody}>
+                {/* 1. Brand & Event Assets */}
+                <BrandAssetsPicker
+                  assets={draft.assets || []}
+                  watermarkLogo={draft.watermarkLogo ?? true}
+                  onAddAsset={handleAddAsset}
+                  onRemoveAsset={handleRemoveAsset}
+                  onToggleWatermark={handleToggleWatermark}
+                  onUpdateAssetType={handleUpdateAssetType}
+                />
+
+                {/* 2. Audio Narration Preference (Script Mode Only) */}
+                {draft.mode === 'script' && (
+                  <View style={styles.drawerSubCard}>
+                    <View style={styles.sectionHeaderRow}>
+                      <Text style={styles.subCardTitle}>Audio Narration Preference</Text>
+                      <Text style={styles.selectedPillTag}>
+                        {draft.narrationMode === 'voiceover' ? 'Word-for-Word' : 'Visual Only'}
+                      </Text>
+                    </View>
+
+                    <View style={styles.narrationCardGroup}>
+                      <TouchableOpacity
+                        activeOpacity={0.8}
+                        onPress={() => updateDraft({ narrationMode: 'voiceover' })}
+                        style={[
+                          styles.narrationOptionCard,
+                          draft.narrationMode === 'voiceover' && styles.narrationOptionCardSelected,
+                        ]}>
+                        <View style={styles.narrationRadioHeader}>
+                          <View style={styles.narrationIconBadge}>
+                            <Ionicons name="mic" size={16} color="#C084FC" />
+                          </View>
+                          <View style={{ flex: 1 }}>
+                            <Text style={styles.narrationOptionTitle}>Read Script Word-for-Word</Text>
+                            <Text style={styles.narrationOptionBadge}>Voiceover Narration</Text>
+                          </View>
+                          <Ionicons
+                            name={draft.narrationMode === 'voiceover' ? 'radio-button-on' : 'radio-button-off'}
+                            size={18}
+                            color={draft.narrationMode === 'voiceover' ? '#A855F7' : '#475569'}
+                          />
+                        </View>
+                      </TouchableOpacity>
+
+                      <TouchableOpacity
+                        activeOpacity={0.8}
+                        onPress={() => updateDraft({ narrationMode: 'visual_only' })}
+                        style={[
+                          styles.narrationOptionCard,
+                          draft.narrationMode === 'visual_only' && styles.narrationOptionCardSelected,
+                        ]}>
+                        <View style={styles.narrationRadioHeader}>
+                          <View style={[styles.narrationIconBadge, { backgroundColor: 'rgba(59, 130, 246, 0.15)' }]}>
+                            <Ionicons name="videocam" size={16} color="#60A5FA" />
+                          </View>
+                          <View style={{ flex: 1 }}>
+                            <Text style={styles.narrationOptionTitle}>Visual Directing Only</Text>
+                            <Text style={[styles.narrationOptionBadge, { color: '#60A5FA' }]}>Instrumental & Sound Design</Text>
+                          </View>
+                          <Ionicons
+                            name={draft.narrationMode === 'visual_only' ? 'radio-button-on' : 'radio-button-off'}
+                            size={18}
+                            color={draft.narrationMode === 'visual_only' ? '#3B82F6' : '#475569'}
+                          />
+                        </View>
+                      </TouchableOpacity>
+                    </View>
+                  </View>
+                )}
+
+                {/* 3. Voice & Narration Options */}
+                <View style={styles.drawerSubCard}>
+                  <View style={styles.settingHeaderRow}>
+                    <View style={styles.settingTitleRow}>
+                      <Ionicons name="mic-outline" size={16} color="#A855F7" />
+                      <Text style={styles.settingBlockTitle}>Voice & Narration</Text>
+                    </View>
+
+                    {draft.voiceStyle !== 'none' && (
+                      <TouchableOpacity
+                        activeOpacity={0.7}
+                        onPress={() => setShowVoiceModal(true)}
+                        style={styles.voiceCustomizerPill}>
+                        <Text style={styles.voiceCustomizerText}>
+                          {draft.voiceGender === 'female' ? 'Female' : 'Male'} ({selectedLang.name.split(' ')[0]}) ▾
+                        </Text>
+                      </TouchableOpacity>
+                    )}
+                  </View>
+
+                  <View style={styles.voiceDeliveryRow}>
+                    {VOICE_STYLES.map((vStyle) => {
+                      const isSelected = draft.voiceStyle === vStyle.id;
+                      return (
+                        <TouchableOpacity
+                          key={vStyle.id}
+                          activeOpacity={0.8}
+                          onPress={() => updateDraft({ voiceStyle: vStyle.id })}
+                          style={[
+                            styles.voicePill,
+                            isSelected && styles.voicePillSelected,
+                          ]}>
+                          <Ionicons
+                            name={vStyle.icon as keyof typeof Ionicons.glyphMap}
+                            size={14}
+                            color={isSelected ? '#FFFFFF' : '#64748B'}
+                          />
+                          <Text
+                            style={[
+                              styles.voicePillText,
+                              isSelected && styles.voicePillTextSelected,
+                            ]}>
+                            {vStyle.name === 'Character Dialogue' ? 'Dialogue' : vStyle.name}
+                          </Text>
+                        </TouchableOpacity>
+                      );
+                    })}
+                  </View>
+                </View>
+
+                {/* 4. Camera Movement & Soundtrack */}
+                <AdvancedOptions
+                  selectedCamera={draft.cameraStyle}
+                  selectedMood={draft.mood}
+                  musicEnabled={draft.backgroundMusic}
+                  soundEffectsEnabled={draft.soundEffects}
+                  onSelectCamera={(cameraStyle) => updateDraft({ cameraStyle })}
+                  onSelectMood={(mood) => updateDraft({ mood })}
+                  onToggleMusic={(backgroundMusic) => updateDraft({ backgroundMusic })}
+                  onToggleSoundEffects={(soundEffects) => updateDraft({ soundEffects })}
+                  showAspectRatio={false}
+                  defaultExpanded={true}
+                />
+              </View>
+            )}
           </View>
 
         </ScrollView>
@@ -984,6 +1115,118 @@ const styles = StyleSheet.create({
   aspectButtonTextSelected: {
     color: '#FFFFFF',
     fontWeight: '700',
+  },
+  aspectButtonSub: {
+    fontSize: 9,
+    color: '#64748B',
+    fontWeight: '500',
+    marginTop: 1,
+  },
+  aspectButtonSubSelected: {
+    color: '#C4B5FD',
+  },
+  // ZONE 3: CUSTOMIZER SECTION (COLLAPSIBLE DRAWER)
+  customizerSection: {
+    gap: 10,
+    marginTop: 2,
+  },
+  customizerTriggerCard: {
+    backgroundColor: '#121522',
+    borderRadius: BorderRadius.xl,
+    borderWidth: 1.5,
+    borderColor: '#22283C',
+    padding: 14,
+    gap: 12,
+  },
+  customizerTriggerCardOpen: {
+    borderColor: 'rgba(192, 132, 252, 0.4)',
+    backgroundColor: '#151928',
+  },
+  customizerHeaderRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+  },
+  customizerIconCircle: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: 'rgba(192, 132, 252, 0.15)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  customizerTitle: {
+    fontSize: 14,
+    fontWeight: '800',
+    color: '#FFFFFF',
+  },
+  customizerSubtitle: {
+    fontSize: 11,
+    color: '#94A3B8',
+    marginTop: 1,
+  },
+  optionalBadge: {
+    backgroundColor: 'rgba(148, 163, 184, 0.12)',
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 4,
+    borderWidth: 1,
+    borderColor: 'rgba(148, 163, 184, 0.25)',
+  },
+  optionalBadgeText: {
+    fontSize: 9,
+    fontWeight: '800',
+    color: '#94A3B8',
+    letterSpacing: 0.5,
+  },
+  customizerBadgesRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    paddingTop: 8,
+    borderTopWidth: 1,
+    borderTopColor: '#1A1F30',
+  },
+  customizerBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    backgroundColor: '#0D0F18',
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 6,
+    borderWidth: 1,
+    borderColor: '#20263A',
+  },
+  customizerBadgeActive: {
+    borderColor: 'rgba(192, 132, 252, 0.35)',
+    backgroundColor: 'rgba(192, 132, 252, 0.08)',
+  },
+  customizerBadgeText: {
+    fontSize: 10,
+    fontWeight: '600',
+    color: '#64748B',
+  },
+  customizerBadgeTextActive: {
+    color: '#C084FC',
+    fontWeight: '700',
+  },
+  expandedDrawerBody: {
+    gap: 12,
+    marginTop: 2,
+  },
+  drawerSubCard: {
+    backgroundColor: '#121522',
+    borderRadius: BorderRadius.xl,
+    borderWidth: 1.5,
+    borderColor: '#22283C',
+    padding: 14,
+    gap: 10,
+  },
+  subCardTitle: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: '#FFFFFF',
   },
   voiceCustomizerPill: {
     backgroundColor: 'rgba(139, 92, 246, 0.15)',

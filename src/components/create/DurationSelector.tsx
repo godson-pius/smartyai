@@ -21,11 +21,6 @@ export const DurationSelector: React.FC<DurationSelectorProps> = ({
   const router = useRouter();
 
   const handlePress = (option: VideoDurationOption) => {
-    const isAvailable = canAccessDuration(option.id);
-    if (!isAvailable) {
-      router.push('/pricing');
-      return;
-    }
     onSelectDuration(option.id);
   };
 

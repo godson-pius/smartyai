@@ -32,7 +32,7 @@ const DEFAULT_SAMPLE_VIDEO = 'https://test-videos.co.uk/vids/sintel/mp4/h264/108
 export default function VideoResultScreen() {
   const router = useRouter();
   const { id } = useLocalSearchParams<{ id: string }>();
-  const { getVideoById, deleteVideo } = useApp();
+  const { getVideoById, deleteVideo, updateDraft } = useApp();
 
   const video = id ? getVideoById(id) : undefined;
   const rawVideoUri = video?.videoUrl || DEFAULT_SAMPLE_VIDEO;
@@ -46,9 +46,14 @@ export default function VideoResultScreen() {
     p.loop = true;
   });
 
-  const targetDuration = video?.durationSeconds && video.durationSeconds > 0
-    ? video.durationSeconds
-    : 15;
+  const targetDuration =
+    video?.durationSeconds && video.durationSeconds > 0
+      ? video.durationSeconds
+      : video?.duration?.includes('15')
+      ? 15
+      : video?.duration?.includes('5')
+      ? 5
+      : 10;
 
   const [isPlaying, setIsPlaying] = useState(false);
   const [isMuted, setIsMuted] = useState(false);
@@ -56,27 +61,49 @@ export default function VideoResultScreen() {
   const [durationSeconds, setDurationSeconds] = useState(targetDuration);
   const [isSaved, setIsSaved] = useState(true);
   const [downloadProgress, setDownloadProgress] = useState<number | null>(null);
+  const [isWatermarkActive, setIsWatermarkActive] = useState(video?.watermarkLogo !== false);
 
   const currentSourceRef = useRef(videoUri);
+  const isPlayingRef = useRef(false);
+  const playbackSecondsRef = useRef(0);
+
+  useEffect(() => {
+    isPlayingRef.current = isPlaying;
+  }, [isPlaying]);
+
+  useEffect(() => {
+    playbackSecondsRef.current = playbackSeconds;
+  }, [playbackSeconds]);
+
+  // Ensure native player stays set to loop seamlessly
+  useEffect(() => {
+    player.loop = true;
+  }, [player, videoUri]);
 
   // Sync playback state from native player
   useEffect(() => {
     const playSub = player.addListener('playingChange', (event) => {
-      setIsPlaying(event.isPlaying);
+      // If the short video clip paused because it reached the end of the file,
+      // but narrative timeline is still progressing (e.g. at 10s of 60s),
+      // seamlessly loop and replay the video to keep visuals moving!
+      if (!event.isPlaying && isPlayingRef.current && playbackSecondsRef.current < targetDuration) {
+        player.replay();
+      } else if (!event.isPlaying && playbackSecondsRef.current >= targetDuration) {
+        setIsPlaying(false);
+      }
     });
 
-    const statusSub = player.addListener('statusChange', () => {
-      // Do not overwrite narrative duration (e.g. 120s / 2min) with raw clip duration
-      if (!video?.durationSeconds && player.duration > 0) {
-        setDurationSeconds(Math.round(player.duration));
+    const playToEndSub = player.addListener('playToEnd', () => {
+      if (isPlayingRef.current && playbackSecondsRef.current < targetDuration) {
+        player.replay();
       }
     });
 
     return () => {
       playSub.remove();
-      statusSub.remove();
+      playToEndSub.remove();
     };
-  }, [player, video?.durationSeconds]);
+  }, [player, targetDuration]);
 
   // Master narrative timeline ticker (syncs playback across the full video duration)
   useEffect(() => {
@@ -84,12 +111,17 @@ export default function VideoResultScreen() {
     if (isPlaying) {
       timer = setInterval(() => {
         setPlaybackSeconds((prev) => {
-          if (prev + 1 >= targetDuration) {
+          const next = prev + 1;
+          if (next >= targetDuration) {
             player.pause();
             setIsPlaying(false);
             return targetDuration;
           }
-          return prev + 1;
+          // Seamless loop check: if player finished or is near end of clip before narrative ends
+          if (player.duration > 0 && player.currentTime >= player.duration - 0.4) {
+            player.replay();
+          }
+          return next;
         });
       }, 1000);
     } else if (timer) {
@@ -134,6 +166,7 @@ export default function VideoResultScreen() {
     } else {
       if (playbackSeconds >= targetDuration) {
         setPlaybackSeconds(0);
+        player.currentTime = 0;
       }
       player.play();
       setIsPlaying(true);
@@ -149,6 +182,17 @@ export default function VideoResultScreen() {
       player.play();
       setIsPlaying(true);
     }
+  };
+
+  const handleGenerateNextScene = (scene: any) => {
+    player.pause();
+    updateDraft({
+      prompt: scene.visualDescription || scene.title,
+      customScript: scene.narrationSnippet || '',
+      mode: scene.narrationSnippet ? 'script' : 'prompt',
+      durationId: '10s',
+    });
+    router.push('/generation');
   };
 
   const handleMuteToggle = () => {
@@ -312,10 +356,26 @@ export default function VideoResultScreen() {
     router.replace('/(tabs)/videos');
   };
 
-  const totalSec = durationSeconds > 0 ? durationSeconds : video.durationSeconds || 15;
+  const totalSec = targetDuration;
   const progressPercent = Math.min(Math.round((playbackSeconds / totalSec) * 100), 100);
   const formattedPlaybackTime = `${Math.floor(playbackSeconds / 60)}:${(playbackSeconds % 60) < 10 ? '0' : ''}${playbackSeconds % 60}`;
   const formattedDurationTime = `${Math.floor(totalSec / 60)}:${(totalSec % 60) < 10 ? '0' : ''}${totalSec % 60}`;
+
+  const isPortrait = video.aspectRatio === '9:16';
+  const isSquare = video.aspectRatio === '1:1';
+  const brandLogo =
+    video?.brandAssets?.find((a) => a.type === 'logo') ||
+    video?.brandAssets?.[0];
+
+  const dynamicPlayerContainer = isPortrait
+    ? { maxWidth: 330, width: '92%' as const, alignSelf: 'center' as const }
+    : { width: '100%' as const };
+
+  const dynamicMediaWrap = isPortrait
+    ? { aspectRatio: 9 / 16 }
+    : isSquare
+    ? { aspectRatio: 1 }
+    : { aspectRatio: 16 / 9 };
 
   return (
     <SafeAreaView style={styles.safeArea} edges={['top']}>
@@ -356,8 +416,8 @@ export default function VideoResultScreen() {
         </View>
 
         {/* Video Player Preview Area with Native Video & Audio Playback */}
-        <View style={[styles.playerContainer, Shadows.glow]}>
-          <Pressable onPress={handlePlayToggle} style={styles.mediaWrap}>
+        <View style={[styles.playerContainer, dynamicPlayerContainer, Shadows.glow]}>
+          <Pressable onPress={handlePlayToggle} style={[styles.mediaWrap, dynamicMediaWrap]}>
             {/* Native Video Surface */}
             <VideoView
               player={player}
@@ -406,19 +466,56 @@ export default function VideoResultScreen() {
                 </View>
               </View>
 
-              {/* Sound / Mute Toggle Pill */}
-              <TouchableOpacity
-                activeOpacity={0.8}
-                onPress={handleMuteToggle}
-                style={styles.audioBadge}>
-                <Ionicons
-                  name={isMuted ? 'volume-mute' : 'volume-high'}
-                  size={14}
-                  color={isMuted ? '#EF4444' : '#FFFFFF'}
-                />
-                <Text style={styles.audioBadgeText}>{isMuted ? 'Muted' : 'Sound'}</Text>
-              </TouchableOpacity>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                {/* Brand Logo Toggle Pill */}
+                {brandLogo && (
+                  <TouchableOpacity
+                    activeOpacity={0.8}
+                    onPress={() => setIsWatermarkActive((prev) => !prev)}
+                    style={[
+                      styles.watermarkToggleBadge,
+                      isWatermarkActive && styles.watermarkToggleBadgeActive,
+                    ]}>
+                    <Ionicons
+                      name={isWatermarkActive ? 'shield-checkmark' : 'shield-outline'}
+                      size={13}
+                      color={isWatermarkActive ? '#C084FC' : '#94A3B8'}
+                    />
+                    <Text
+                      style={[
+                        styles.watermarkToggleText,
+                        isWatermarkActive && styles.watermarkToggleTextActive,
+                      ]}>
+                      Logo {isWatermarkActive ? 'ON' : 'OFF'}
+                    </Text>
+                  </TouchableOpacity>
+                )}
+
+                {/* Sound / Mute Toggle Pill */}
+                <TouchableOpacity
+                  activeOpacity={0.8}
+                  onPress={handleMuteToggle}
+                  style={styles.audioBadge}>
+                  <Ionicons
+                    name={isMuted ? 'volume-mute' : 'volume-high'}
+                    size={14}
+                    color={isMuted ? '#EF4444' : '#FFFFFF'}
+                  />
+                  <Text style={styles.audioBadgeText}>{isMuted ? 'Muted' : 'Sound'}</Text>
+                </TouchableOpacity>
+              </View>
             </View>
+
+            {/* Brand Logo Watermark Overlay */}
+            {brandLogo && isWatermarkActive && (
+              <View style={styles.playerWatermark} pointerEvents="none">
+                <Image
+                  source={{ uri: brandLogo.uri }}
+                  style={styles.playerWatermarkImage}
+                  contentFit="contain"
+                />
+              </View>
+            )}
 
             {/* Bottom Scrubber Bar */}
             <View style={styles.playerControlsBar} pointerEvents="none">
@@ -502,6 +599,43 @@ export default function VideoResultScreen() {
               </View>
             </View>
           </Card>
+
+          {/* Attached Brand & Event Assets Card */}
+          {video.brandAssets && video.brandAssets.length > 0 ? (
+            <Card style={styles.brandAssetsCard} padding={14}>
+              <View style={styles.brandAssetsCardHeader}>
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                  <Ionicons name="business" size={15} color="#C084FC" />
+                  <Text style={styles.brandAssetsTitle}>Brand & Event Assets</Text>
+                </View>
+                <View style={styles.brandAssetsCountBadge}>
+                  <Text style={styles.brandAssetsCountText}>
+                    {video.brandAssets.length} Attached
+                  </Text>
+                </View>
+              </View>
+              <ScrollView
+                horizontal
+                showsHorizontalScrollIndicator={false}
+                contentContainerStyle={{ gap: 10, marginTop: 10 }}>
+                {video.brandAssets.map((asset) => (
+                  <View key={asset.id} style={styles.brandAssetItem}>
+                    <Image
+                      source={{ uri: asset.uri }}
+                      style={styles.brandAssetThumb}
+                      contentFit="cover"
+                    />
+                    <View style={styles.brandAssetMeta}>
+                      <Text style={styles.brandAssetType}>{asset.type.toUpperCase()}</Text>
+                      <Text numberOfLines={1} style={styles.brandAssetName}>
+                        {asset.name}
+                      </Text>
+                    </View>
+                  </View>
+                ))}
+              </ScrollView>
+            </Card>
+          ) : null}
         </View>
 
         {/* AI Screenplay & Storyboard Breakdown (Generated via Gemini 3.8 Flash) */}
@@ -627,6 +761,24 @@ export default function VideoResultScreen() {
                           </Text>
                         </View>
                       ) : null}
+
+                      {scene.sceneNumber > 1 && (
+                        <TouchableOpacity
+                          activeOpacity={0.8}
+                          onPress={() => handleGenerateNextScene(scene)}
+                          style={styles.generateSceneBtn}>
+                          <LinearGradient
+                            colors={['#6366F1', '#8B5CF6']}
+                            start={{ x: 0, y: 0 }}
+                            end={{ x: 1, y: 0 }}
+                            style={styles.generateSceneGradient}>
+                            <Ionicons name="sparkles" size={13} color="#FFFFFF" />
+                            <Text style={styles.generateSceneBtnText}>
+                              Generate Scene {scene.sceneNumber} (+10s Shot)
+                            </Text>
+                          </LinearGradient>
+                        </TouchableOpacity>
+                      )}
                     </TouchableOpacity>
                   );
                 })}
@@ -775,7 +927,6 @@ const styles = StyleSheet.create({
   },
   mediaWrap: {
     width: '100%',
-    aspectRatio: 16 / 10,
     position: 'relative',
     justifyContent: 'center',
     alignItems: 'center',
@@ -1231,5 +1382,123 @@ const styles = StyleSheet.create({
     fontSize: 11,
     fontStyle: 'italic',
     flex: 1,
+  },
+  generateSceneBtn: {
+    marginTop: 8,
+    borderRadius: 8,
+    overflow: 'hidden',
+  },
+  generateSceneGradient: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    gap: 6,
+  },
+  generateSceneBtnText: {
+    color: '#FFFFFF',
+    fontSize: 12,
+    fontWeight: '700',
+  },
+  playerWatermark: {
+    position: 'absolute',
+    top: 50,
+    right: 12,
+    backgroundColor: 'rgba(9, 10, 15, 0.85)',
+    borderRadius: 8,
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.25)',
+    zIndex: 10,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.5,
+    shadowRadius: 4,
+    elevation: 4,
+  },
+  playerWatermarkImage: {
+    width: 68,
+    height: 32,
+  },
+  watermarkToggleBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    backgroundColor: 'rgba(9, 10, 15, 0.85)',
+    paddingHorizontal: 8,
+    paddingVertical: 5,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.2)',
+  },
+  watermarkToggleBadgeActive: {
+    borderColor: 'rgba(192, 132, 252, 0.5)',
+    backgroundColor: 'rgba(192, 132, 252, 0.15)',
+  },
+  watermarkToggleText: {
+    color: '#94A3B8',
+    fontSize: 11,
+    fontWeight: '700',
+  },
+  watermarkToggleTextActive: {
+    color: '#C084FC',
+  },
+  brandAssetsCard: {
+    marginTop: 12,
+    backgroundColor: 'rgba(19, 21, 31, 0.75)',
+    borderColor: 'rgba(192, 132, 252, 0.25)',
+  },
+  brandAssetsCardHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  brandAssetsTitle: {
+    color: '#F1F5F9',
+    fontSize: 13,
+    fontWeight: '700',
+  },
+  brandAssetsCountBadge: {
+    backgroundColor: 'rgba(192, 132, 252, 0.15)',
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+    borderRadius: 6,
+    borderWidth: 1,
+    borderColor: 'rgba(192, 132, 252, 0.3)',
+  },
+  brandAssetsCountText: {
+    color: '#C084FC',
+    fontSize: 11,
+    fontWeight: '700',
+  },
+  brandAssetItem: {
+    width: 88,
+    backgroundColor: 'rgba(255, 255, 255, 0.04)',
+    borderRadius: 8,
+    overflow: 'hidden',
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.08)',
+  },
+  brandAssetThumb: {
+    width: 88,
+    height: 60,
+    backgroundColor: 'rgba(0, 0, 0, 0.4)',
+  },
+  brandAssetMeta: {
+    padding: 6,
+    gap: 2,
+  },
+  brandAssetType: {
+    color: '#C084FC',
+    fontSize: 9,
+    fontWeight: '800',
+    letterSpacing: 0.5,
+  },
+  brandAssetName: {
+    color: '#94A3B8',
+    fontSize: 10,
+    fontWeight: '500',
   },
 });
